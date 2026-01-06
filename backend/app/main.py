@@ -2,6 +2,12 @@
 slop-pi: FastAPI backend for meal planning & nutrition tracking.
 
 Run with: uvicorn app.main:app --reload
+
+Architecture:
+- Handles all heavy computation (recipe flattening, nutrition calculations)
+- Provides comprehensive USDA micronutrient data with RDA tracking
+- Runs background jobs for auto-consumption and reminders
+- Optimized for Raspberry Pi deployment with aggressive caching
 """
 
 import logging
@@ -13,6 +19,8 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.api import health, usda, ai, cron
+from app.api import nutrition as nutrition_api
+from app.api import recipes as recipes_api
 from app.services.usda import USDAService
 from app.jobs.scheduler import start_scheduler, shutdown_scheduler
 
@@ -105,6 +113,8 @@ app.include_router(health.router, tags=["health"])
 app.include_router(usda.router, prefix="/api/usda", tags=["usda"])
 app.include_router(ai.router, prefix="/api/ai", tags=["ai"])
 app.include_router(cron.router, prefix="/api/cron", tags=["cron"])
+app.include_router(nutrition_api.router)  # /api/nutrition
+app.include_router(recipes_api.router)  # /api/recipes
 
 
 @app.get("/")
@@ -112,9 +122,17 @@ async def root():
     """Root endpoint."""
     return {
         "name": "slop-pi",
-        "version": "0.1.0",
+        "version": "2.0.0",
+        "description": "Meal planning & nutrition API with comprehensive micronutrient tracking",
         "docs": "/docs",
-        "health": "/health",
+        "endpoints": {
+            "health": "/health",
+            "usda": "/api/usda",
+            "ai": "/api/ai",
+            "nutrition": "/api/nutrition",
+            "recipes": "/api/recipes",
+            "cron": "/api/cron",
+        },
     }
 
 

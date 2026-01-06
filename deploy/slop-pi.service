@@ -1,0 +1,54 @@
+# slop-pi systemd service
+#
+# Install:
+#   sudo cp deploy/slop-pi.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable slop-pi
+#   sudo systemctl start slop-pi
+#
+# Logs:
+#   journalctl -u slop-pi -f
+
+[Unit]
+Description=slop-pi Meal Planning API
+Documentation=https://github.com/yourusername/slop-pi
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/slop-pi
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/home/pi/slop-pi/.venv/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=/home/pi/slop-pi/.env
+
+# Run with 2 workers (optimal for Raspberry Pi 4)
+ExecStart=/home/pi/slop-pi/.venv/bin/uvicorn backend.app.main:app \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --workers 2 \
+    --log-level info
+
+# Restart policy
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+# Resource limits (adjust for your Pi)
+MemoryMax=512M
+CPUQuota=200%
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pi/slop-pi/data /home/pi/slop-pi/logs
+
+[Install]
+WantedBy=multi-user.target

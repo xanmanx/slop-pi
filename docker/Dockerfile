@@ -1,5 +1,8 @@
-# slop-pi FastAPI Backend
-# Optimized for Raspberry Pi (ARM64)
+# slop-pi: Raspberry Pi Optimized Docker Image
+#
+# Optimized for ARM64 (Raspberry Pi 4/5)
+# Uses uv for fast dependency installation
+# Multi-worker for utilizing all CPU cores
 
 FROM python:3.11-slim
 
@@ -28,6 +31,12 @@ RUN mv backend/app ./app && rm -rf backend
 # Create data directory for SQLite cache (mounted via volume at runtime)
 RUN mkdir -p /app/data /app/logs
 
+# Set environment
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV DATA_DIR=/app/data
+ENV USDA_CACHE_DB=/app/data/usda_cache.db
+
 # Expose port
 EXPOSE 8000
 
@@ -36,4 +45,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Use 2 workers for Raspberry Pi (balances memory vs CPU usage)
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
