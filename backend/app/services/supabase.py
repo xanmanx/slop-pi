@@ -61,9 +61,9 @@ async def get_plan_entries(user_id: str, start_date: str, end_date: str) -> list
         client.table(TABLES["plan"])
         .select("*, food_item:foodos2_food_items(*)")
         .eq("user_id", user_id)
-        .gte("date", start_date)
-        .lte("date", end_date)
-        .order("date")
+        .gte("planned_date", start_date)
+        .lte("planned_date", end_date)
+        .order("planned_date")
         .order("slot")
         .execute()
     )
@@ -77,7 +77,7 @@ async def get_upcoming_meals(user_id: str, date: str, slot: str | None = None) -
         client.table(TABLES["plan"])
         .select("*, food_item:foodos2_food_items(name)")
         .eq("user_id", user_id)
-        .eq("date", date)
+        .eq("planned_date", date)
     )
     if slot:
         query = query.eq("slot", slot)
@@ -85,12 +85,12 @@ async def get_upcoming_meals(user_id: str, date: str, slot: str | None = None) -
     return result.data or []
 
 
-async def mark_meal_consumed(entry_id: str, consumed: bool = True) -> bool:
-    """Mark a plan entry as consumed."""
+async def mark_meal_consumed(entry_id: str, is_logged: bool = True) -> bool:
+    """Mark a plan entry as consumed/logged."""
     client = get_supabase_client()
     result = (
         client.table(TABLES["plan"])
-        .update({"consumed": consumed})
+        .update({"is_logged": is_logged})
         .eq("id", entry_id)
         .execute()
     )

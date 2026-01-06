@@ -54,13 +54,13 @@ async def process_scheduled_consumptions() -> dict:
                 if not auto_consume:
                     continue
 
-                # Get plan entries for today that haven't been consumed yet
+                # Get plan entries for today that haven't been logged/consumed yet
                 result = (
                     client.table(TABLES["plan"])
-                    .select("id, date, slot, default_time, consumed")
+                    .select("id, planned_date, slot, scheduled_time, is_logged")
                     .eq("user_id", user_id)
-                    .eq("date", today)
-                    .eq("consumed", False)
+                    .eq("planned_date", today)
+                    .or_("is_logged.is.null,is_logged.eq.false")
                     .execute()
                 )
 
@@ -68,7 +68,7 @@ async def process_scheduled_consumptions() -> dict:
 
                 for entry in entries:
                     # Check if the scheduled time has passed
-                    entry_time = entry.get("default_time", "")
+                    entry_time = entry.get("scheduled_time", "")
                     if not entry_time:
                         # Use default times by slot
                         slot_times = {
@@ -79,13 +79,12 @@ async def process_scheduled_consumptions() -> dict:
                         }
                         entry_time = slot_times.get(entry.get("slot", ""), "12:00")
 
-                    # If current time is past the scheduled time, mark as consumed
+                    # If current time is past the scheduled time, mark as logged/consumed
                     if current_time >= entry_time:
                         update_result = (
                             client.table(TABLES["plan"])
                             .update({
-                                "consumed": True,
-                                "consumed_at": now.isoformat(),
+                                "is_logged": True,
                             })
                             .eq("id", entry["id"])
                             .execute()

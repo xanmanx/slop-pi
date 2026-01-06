@@ -60,3 +60,4 @@ Thumbs.db
 *.pem
 *.key
 secrets/
+backend/data/*.db
