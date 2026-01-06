@@ -15,18 +15,18 @@ ENV PATH="/root/.local/bin:$PATH"
 # Set working directory
 WORKDIR /app
 
-# Copy dependency files
-COPY pyproject.toml ./
+# Copy everything needed for the build
+COPY pyproject.toml README.md ./
+COPY backend/app ./backend/app
 
-# Install dependencies
-RUN uv pip install --system -e .
+# Install the package and dependencies
+RUN uv pip install --system .
 
-# Copy application code
-COPY backend/app ./app
-COPY backend/data ./data
+# Move app to correct location for runtime
+RUN mv backend/app ./app && rm -rf backend
 
-# Create data directory for SQLite cache
-RUN mkdir -p /app/data
+# Create data directory for SQLite cache (mounted via volume at runtime)
+RUN mkdir -p /app/data /app/logs
 
 # Expose port
 EXPOSE 8000
