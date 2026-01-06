@@ -7,8 +7,9 @@ Run with: uvicorn app.main:app --reload
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.api import health, usda, ai, cron
@@ -62,12 +63,42 @@ app.add_middleware(
         "http://localhost:3000",
         "http://slop.local:3000",
         "https://slop.vercel.app",  # Update with your Vercel domain
+        "https://slxp.app",
         "*",  # For development - restrict in production
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def verify_api_key(request: Request, call_next):
+    """Verify API key for protected endpoints."""
+    # Allow these paths without auth
+    public_paths = ["/", "/health", "/health/detailed", "/docs", "/openapi.json", "/redoc"]
+
+    if request.url.path in public_paths:
+        return await call_next(request)
+
+    # Check API key
+    api_key = request.headers.get("X-API-Key")
+    expected_key = settings.pi_api_key
+
+    # If no key configured, allow all (dev mode)
+    if not expected_key:
+        logger.warning("PI_API_KEY not set - API is unprotected!")
+        return await call_next(request)
+
+    if api_key != expected_key:
+        logger.warning(f"Invalid API key attempt from {request.client.host}")
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid or missing API key"}
+        )
+
+    return await call_next(request)
+
 
 # Include routers
 app.include_router(health.router, tags=["health"])

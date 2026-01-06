@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # Cron
     cron_secret: str | None = None
 
+    # API Security
+    pi_api_key: str | None = None
+
     # Paths
     data_dir: str = "./data"
     usda_cache_db: str = "./data/usda_cache.db"
