@@ -49,28 +49,38 @@ class AIService:
 
     async def lookup_item(self, query: str, desired_kind: str = "ingredient") -> dict:
         """Look up nutrition info for a food item."""
-        system_prompt = """You are a nutrition lookup assistant.
+        system_prompt = """You are a nutrition lookup assistant with knowledge of food composition.
 Return JSON only:
 {
   "kind": "ingredient|snack|product",
-  "name": "string",
+  "name": "string (clean, standardized name)",
   "serving_g": number,
   "base_calories": number,
   "calories_per_100g": number,
   "protein_g_per_100g": number,
   "carbs_g_per_100g": number,
   "fat_g_per_100g": number,
-  "notes": "string"
+  "fiber_g_per_100g": number (or 0),
+  "sodium_mg_per_100g": number (or 0),
+  "caffeine_mg_per_100g": number (or 0 if no caffeine),
+  "sugar_g_per_100g": number (or 0),
+  "micronutrients": [
+    {"name": "nutrient name", "amount_per_100g": number, "unit": "mg|mcg|g"}
+  ],
+  "notes": "string with source info or caveats"
 }
 
 Rules:
-- If it's a packaged item (bar, chips, yogurt cup), use kind=product
+- If it's a packaged item (bar, chips, yogurt cup, energy drink, canned beverage), use kind=product
 - If it's a snack concept (apple + peanut butter), use kind=snack
 - Otherwise use kind=ingredient
-- serving_g is grams per typical serving
+- serving_g is grams per typical serving (use mL for beverages, 1g = 1mL approx)
 - base_calories is calories per serving
-- per_100g fields must be consistent with base_calories and serving_g
-- If uncertain, be conservative and say so in notes"""
+- per_100g fields must be mathematically consistent with base_calories and serving_g
+- CAFFEINE: Include for coffee, tea, energy drinks, chocolate. Coffee ~40-80mg/100mL, energy drinks vary by brand
+- MICRONUTRIENTS: Include 3-8 relevant ones (vitamins, minerals) if known
+- If uncertain, be conservative and note it. Reference common nutrition databases mentally
+- For branded products, use publicly available nutrition facts if you know them"""
 
         response = await self.client.chat.completions.create(
             model="gpt-4o-mini",

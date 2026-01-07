@@ -50,6 +50,11 @@ class LookupResponse(BaseModel):
     protein_g_per_100g: float
     carbs_g_per_100g: float
     fat_g_per_100g: float
+    fiber_g_per_100g: float = 0
+    sodium_mg_per_100g: float = 0
+    caffeine_mg_per_100g: float = 0
+    sugar_g_per_100g: float = 0
+    micronutrients: list[dict] = []
     notes: str
 
 
