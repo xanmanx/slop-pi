@@ -321,15 +321,15 @@ class NutritionService:
         try:
             prefs_result = (
                 client.table(TABLES["prefs"])
-                .select("auto_consume, auto_consume_meals")
+                .select("auto_consume_meals, manual_consume_enabled")
                 .eq("user_id", user_id)
                 .single()
                 .execute()
             )
             if prefs_result.data:
-                auto_consume_enabled = prefs_result.data.get("auto_consume") or prefs_result.data.get("auto_consume_meals") or False
-        except Exception:
-            pass
+                auto_consume_enabled = prefs_result.data.get("auto_consume_meals") or False
+        except Exception as e:
+            logger.debug(f"Could not load prefs for consumption check: {e}")
 
         # Load plan entries for the day
         entries_result = (
