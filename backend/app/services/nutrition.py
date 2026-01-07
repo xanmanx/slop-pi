@@ -341,15 +341,35 @@ class NutritionService:
         )
         all_entries = entries_result.data or []
 
+        # Load consumption records to check what's been consumed
+        consumed_entry_ids = set()
+        try:
+            consumption_result = (
+                client.table(TABLES["consumption"])
+                .select("plan_entry_id")
+                .eq("user_id", user_id)
+                .eq("meal_planned_date", date_str)
+                .execute()
+            )
+            for c in consumption_result.data or []:
+                if c.get("plan_entry_id"):
+                    consumed_entry_ids.add(c["plan_entry_id"])
+        except Exception as e:
+            logger.debug(f"Could not load consumption records: {e}")
+
         # Filter to only consumed entries
         entries = []
         for e in all_entries:
             is_consumed = False
+            entry_id = e.get("id")
 
-            # Check manual consumption
-            if e.get("is_logged"):
+            # Check if consumed via consumption table (auto or manual)
+            if entry_id in consumed_entry_ids:
                 is_consumed = True
-            # Check auto-consumption
+            # Check is_logged flag (manual flag on entry)
+            elif e.get("is_logged"):
+                is_consumed = True
+            # Check auto-consumption by time (fallback if consumption record missing)
             elif auto_consume_enabled:
                 scheduled_time = e.get("scheduled_time")
                 if target_date < today:
@@ -363,7 +383,7 @@ class NutritionService:
             if is_consumed:
                 entries.append(e)
 
-        logger.debug(f"Daily nutrition: {len(entries)}/{len(all_entries)} entries consumed for {date_str}")
+        logger.info(f"Daily nutrition: {len(entries)}/{len(all_entries)} entries consumed for {date_str} (consumed_ids: {len(consumed_entry_ids)})")
 
         # Load supplements if requested
         supplements = []
