@@ -31,7 +31,8 @@ logger = logging.getLogger(__name__)
 # Cache Configuration
 # ============================================================================
 
-# Recipe graph cache (user_id -> context)
+# Recipe graph cache (cache_key -> context)
+# Cache key includes user_id and any additional owner IDs
 _graph_cache: dict[str, tuple[float, RecipeGraphContext]] = {}
 _GRAPH_CACHE_TTL = 300  # 5 minutes
 
@@ -94,29 +95,43 @@ class RecipeGraphContext:
 async def get_recipe_graph_context(
     user_id: str,
     force_refresh: bool = False,
+    additional_owner_ids: Optional[list[str]] = None,
 ) -> RecipeGraphContext:
     """Load recipe graph context with caching.
 
     Loads all recipe data into memory for fast DAG traversal.
     Cached for 5 minutes per user.
+
+    Args:
+        user_id: The current user ID
+        force_refresh: Force reload from database
+        additional_owner_ids: Additional user IDs whose items should be included
+            (e.g., recipe owner in household/team scenarios)
     """
     global _graph_cache
 
     now = time.time()
 
+    # Build cache key that includes additional owners
+    all_user_ids = sorted(set([user_id] + (additional_owner_ids or [])))
+    cache_key = ":".join(all_user_ids)
+
     # Check cache
-    if not force_refresh and user_id in _graph_cache:
-        cached_at, ctx = _graph_cache[user_id]
+    if not force_refresh and cache_key in _graph_cache:
+        cached_at, ctx = _graph_cache[cache_key]
         if now - cached_at < _GRAPH_CACHE_TTL:
             return ctx
 
-    logger.info(f"Loading recipe graph for user {user_id[:8]}...")
+    logger.info(f"Loading recipe graph for users {[u[:8] for u in all_user_ids]}...")
     start = time.time()
 
     client = get_supabase_client()
 
-    # Build filter for user access
-    access_filter = f"user_id.eq.{user_id},user_id.is.null,is_public.eq.true"
+    # Build filter for user access - include all specified user IDs
+    access_parts = [f"user_id.eq.{uid}" for uid in all_user_ids]
+    access_parts.append("user_id.is.null")
+    access_parts.append("is_public.eq.true")
+    access_filter = ",".join(access_parts)
 
     # Load all data in parallel
     items_future = asyncio.get_event_loop().run_in_executor(
@@ -186,7 +201,7 @@ async def get_recipe_graph_context(
     )
 
     # Cache it
-    _graph_cache[user_id] = (now, ctx)
+    _graph_cache[cache_key] = (now, ctx)
 
     elapsed = (time.time() - start) * 1000
     logger.info(
@@ -246,16 +261,27 @@ async def flatten_recipe(
     include_micronutrients: bool = True,
     include_rda: bool = True,
     use_cache: bool = True,
+    owner_id: Optional[str] = None,
 ) -> RecipeFlattened:
     """Flatten a recipe DAG into ingredients with full nutrition.
 
     This is the main entry point for recipe flattening. Results are cached
     for 10 minutes to avoid redundant computation.
+
+    Args:
+        recipe_id: The food item ID of the recipe to flatten
+        user_id: The current user ID (for preferences)
+        scale_factor: Scale factor for ingredient amounts
+        include_micronutrients: Include micronutrient data
+        include_rda: Include RDA percentages
+        use_cache: Use cached results if available
+        owner_id: The owner of the recipe (if different from user_id,
+            ensures owner's items are included in graph context)
     """
     global _flatten_cache
 
     now = time.time()
-    cache_key = (recipe_id, user_id, scale_factor)
+    cache_key = (recipe_id, user_id, scale_factor, owner_id)
 
     # Check cache
     if use_cache and cache_key in _flatten_cache:
@@ -264,7 +290,9 @@ async def flatten_recipe(
             return result
 
     # Load graph context (also cached)
-    ctx = await get_recipe_graph_context(user_id)
+    # Include owner_id to ensure recipe owner's items are accessible
+    additional_owners = [owner_id] if owner_id and owner_id != user_id else None
+    ctx = await get_recipe_graph_context(user_id, additional_owner_ids=additional_owners)
 
     # Get root item
     root_item = ctx.item_map.get(recipe_id)
@@ -576,25 +604,78 @@ async def flatten_recipes_batch(
     recipe_ids: list[str],
     user_id: str,
     scale_factors: Optional[dict[str, float]] = None,
+    owner_ids: Optional[dict[str, str]] = None,
 ) -> list[RecipeFlattened]:
     """Flatten multiple recipes in parallel.
 
     This is significantly faster than calling flatten_recipe() in a loop
     because the graph context is shared.
+
+    Args:
+        recipe_ids: List of recipe IDs to flatten
+        user_id: Current user ID (for preferences)
+        scale_factors: Optional dict of recipe_id -> scale factor
+        owner_ids: Optional dict of recipe_id -> owner_id (for cross-user recipes)
     """
     if not recipe_ids:
         return []
 
-    # Pre-load graph context once
-    await get_recipe_graph_context(user_id)
+    # Collect all unique owner IDs
+    all_owner_ids = set()
+    if owner_ids:
+        all_owner_ids.update(owner_ids.values())
+
+    # Pre-load graph context once with all owners
+    additional_owners = list(all_owner_ids - {user_id}) if all_owner_ids else None
+    await get_recipe_graph_context(user_id, additional_owner_ids=additional_owners)
 
     # Flatten all recipes concurrently
     tasks = []
     for rid in recipe_ids:
         scale = (scale_factors or {}).get(rid, 1.0)
-        tasks.append(flatten_recipe(rid, user_id, scale))
+        owner = (owner_ids or {}).get(rid)
+        tasks.append(flatten_recipe(rid, user_id, scale, owner_id=owner))
 
     return await asyncio.gather(*tasks)
+
+
+async def get_recipe_owner(recipe_id: str) -> Optional[str]:
+    """Get the owner user_id of a recipe.
+
+    Useful for looking up the owner before flattening a cross-user recipe.
+    """
+    client = get_supabase_client()
+    result = client.table(TABLES["items"]).select("user_id").eq("id", recipe_id).single().execute()
+    if result.data:
+        return result.data.get("user_id")
+    return None
+
+
+async def flatten_recipe_auto_owner(
+    recipe_id: str,
+    user_id: str,
+    scale_factor: float = 1.0,
+    include_micronutrients: bool = True,
+    include_rda: bool = True,
+    use_cache: bool = True,
+) -> RecipeFlattened:
+    """Flatten a recipe, automatically detecting the owner.
+
+    This is a convenience wrapper that looks up the recipe owner first,
+    ensuring cross-user recipes (e.g., household/team) can be flattened.
+    """
+    # Look up the recipe owner
+    owner_id = await get_recipe_owner(recipe_id)
+
+    return await flatten_recipe(
+        recipe_id=recipe_id,
+        user_id=user_id,
+        scale_factor=scale_factor,
+        include_micronutrients=include_micronutrients,
+        include_rda=include_rda,
+        use_cache=use_cache,
+        owner_id=owner_id,
+    )
 
 
 # ============================================================================

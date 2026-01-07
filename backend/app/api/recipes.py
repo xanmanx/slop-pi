@@ -12,7 +12,9 @@ from pydantic import BaseModel
 from app.models.recipes import RecipeFlattened, BatchRecipeRequest
 from app.services.recipes import (
     flatten_recipe,
+    flatten_recipe_auto_owner,
     flatten_recipes_batch,
+    get_recipe_owner,
     clear_recipe_caches,
 )
 
@@ -46,8 +48,11 @@ async def flatten_single_recipe(request: FlattenRequest) -> RecipeFlattened:
     - Recipe metadata (prep time, steps)
 
     Results are cached for 10 minutes.
+
+    Note: Automatically detects the recipe owner to support cross-user
+    recipes (e.g., household/team scenarios).
     """
-    return await flatten_recipe(
+    return await flatten_recipe_auto_owner(
         recipe_id=request.recipe_id,
         user_id=request.user_id,
         scale_factor=request.scale_factor,
@@ -66,8 +71,9 @@ async def flatten_recipe_get(
     """GET endpoint for flattening a recipe.
 
     Same as POST /flatten but via GET for simpler integration.
+    Automatically detects the recipe owner for cross-user support.
     """
-    return await flatten_recipe(
+    return await flatten_recipe_auto_owner(
         recipe_id=recipe_id,
         user_id=user_id,
         scale_factor=scale,
@@ -87,6 +93,7 @@ async def flatten_recipes_batch_endpoint(request: BatchFlattenRequest) -> list[R
     3. Results are cached individually
 
     Use this when loading a day's meals or weekly plan.
+    Automatically detects recipe owners for cross-user support.
     """
     if len(request.recipe_ids) > 50:
         raise HTTPException(
@@ -94,10 +101,23 @@ async def flatten_recipes_batch_endpoint(request: BatchFlattenRequest) -> list[R
             detail="Cannot flatten more than 50 recipes at once"
         )
 
+    # Auto-detect owners for all recipes
+    from app.services.supabase import get_supabase_client, TABLES
+    client = get_supabase_client()
+    result = client.table(TABLES["items"]).select("id,user_id").in_(
+        "id", request.recipe_ids
+    ).execute()
+
+    owner_ids = {}
+    for item in (result.data or []):
+        if item.get("user_id"):
+            owner_ids[item["id"]] = item["user_id"]
+
     return await flatten_recipes_batch(
         recipe_ids=request.recipe_ids,
         user_id=request.user_id,
         scale_factors=request.scale_factors,
+        owner_ids=owner_ids if owner_ids else None,
     )
 
 
