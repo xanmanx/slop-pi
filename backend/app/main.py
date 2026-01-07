@@ -88,6 +88,11 @@ async def verify_api_key(request: Request, call_next):
     # Allow these paths without auth
     public_paths = ["/", "/health", "/health/detailed", "/docs", "/openapi.json", "/redoc"]
 
+    # Also allow recipe endpoints (secured by user_id in payload)
+    recipe_prefixes = ["/api/recipes/", "/api/nutrition/", "/api/grocery/", "/api/planning/"]
+    if any(request.url.path.startswith(prefix) for prefix in recipe_prefixes):
+        return await call_next(request)
+
     if request.url.path in public_paths:
         return await call_next(request)
 
