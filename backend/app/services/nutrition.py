@@ -445,6 +445,7 @@ class NutritionService:
                 # For meals/snacks, flatten the recipe to get actual ingredients
                 # This ensures we capture micronutrients from the ingredients
                 try:
+                    logger.info(f"Flattening {item.get('kind')} '{item.get('name')}' ({item['id'][:8]}...) for nutrition")
                     flattened = await flatten_recipe_auto_owner(
                         recipe_id=item["id"],
                         user_id=user_id,
@@ -452,6 +453,7 @@ class NutritionService:
                         include_micronutrients=True,
                         include_rda=False,  # We'll calculate RDA later
                     )
+                    logger.info(f"Flattened '{flattened.recipe_name}': {len(flattened.ingredients)} ingredients, {flattened.nutrition.total_calories} cal")
                     # Add each ingredient with its scaled amount
                     for ing in flattened.ingredients:
                         # Convert ingredient to dict format expected by nutrition calc

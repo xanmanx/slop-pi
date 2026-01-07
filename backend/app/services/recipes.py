@@ -221,6 +221,8 @@ async def get_recipe_graph_context(
     for edge in edges_result_data:
         edges_by_parent[edge["parent_food_item_id"]].append(edge)
 
+    logger.info(f"Built edges_by_parent with {len(edges_by_parent)} unique parent recipes")
+
     # Sort edges by sort_order
     for edges in edges_by_parent.values():
         edges.sort(key=lambda e: e.get("sort_order") or 0)
