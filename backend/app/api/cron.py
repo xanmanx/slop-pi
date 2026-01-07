@@ -1,12 +1,13 @@
 """Cron job endpoints - called by system crontab or scheduler."""
 
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import logging
 
 from fastapi import APIRouter, HTTPException, Request, Header
 
 from app.config import get_settings
-from app.jobs.consumption import process_scheduled_consumptions
+from app.jobs.consumption import process_all_consumptions, get_local_now
 from app.jobs.notifications import send_meal_reminders
 
 router = APIRouter()
@@ -50,24 +51,31 @@ async def cron_process_consumptions(
     x_cron_secret: str | None = Header(None),
 ):
     """
-    Process scheduled meal consumptions.
+    Process scheduled meal and supplement consumptions.
 
-    Call this via crontab every 15 minutes:
-    */15 * * * * curl -s http://localhost:8000/api/cron/process-consumptions
+    Call this via crontab every 2 minutes:
+    */2 * * * * curl -s http://localhost:8000/api/cron/process-consumptions
+
+    Note: The scheduler already runs this automatically every 2 minutes.
+    This endpoint is for manual triggering or external cron jobs.
     """
     if not verify_cron_auth(request, authorization, x_cron_secret):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    logger.info("Starting scheduled consumption processing...")
+    logger.info("Starting scheduled consumption processing (manual trigger)...")
 
     try:
-        result = await process_scheduled_consumptions()
-        logger.info(f"Processed {result['processed_count']} consumptions")
+        result = await process_all_consumptions()
+        now = get_local_now()
+        logger.info(f"Processed {result['total_processed']} consumptions")
         return {
             "success": True,
-            "processed_count": result["processed_count"],
-            "errors": result.get("errors", []),
-            "timestamp": datetime.utcnow().isoformat(),
+            "meals": result.get("meals", {}),
+            "supplements": result.get("supplements", {}),
+            "total_processed": result.get("total_processed", 0),
+            "total_errors": result.get("total_errors", 0),
+            "timezone": settings.timezone,
+            "timestamp": now.isoformat(),
         }
     except Exception as e:
         logger.error(f"Error processing consumptions: {e}")

@@ -8,11 +8,14 @@ For more reliability, you can also use system crontab to hit the /api/cron endpo
 import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
-from app.jobs.consumption import process_scheduled_consumptions
+from app.jobs.consumption import process_all_consumptions
 from app.jobs.notifications import send_meal_reminders, send_daily_summary
+from app.config import get_settings
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 scheduler = AsyncIOScheduler()
 
@@ -20,12 +23,16 @@ scheduler = AsyncIOScheduler()
 def start_scheduler():
     """Start the background scheduler with all jobs."""
 
-    # Process consumptions every 15 minutes
+    # Process consumptions frequently (default: every 2 minutes)
+    # This ensures meals are marked consumed quickly after their scheduled time
+    consumption_interval = settings.consumption_interval_minutes
+    logger.info(f"Scheduling consumption processing every {consumption_interval} minutes")
+
     scheduler.add_job(
-        process_scheduled_consumptions,
-        CronTrigger(minute="*/15"),
+        process_all_consumptions,
+        IntervalTrigger(minutes=consumption_interval),
         id="process_consumptions",
-        name="Process scheduled meal consumptions",
+        name="Process scheduled meal and supplement consumptions",
         replace_existing=True,
     )
 
