@@ -126,60 +126,92 @@ async def get_recipe_graph_context(
     start = time.time()
 
     client = get_supabase_client()
+    loop = asyncio.get_running_loop()
 
-    # Build filter for user access - include all specified user IDs
-    access_parts = [f"user_id.eq.{uid}" for uid in all_user_ids]
-    access_parts.append("user_id.is.null")
-    access_parts.append("is_public.eq.true")
-    access_filter = ",".join(access_parts)
+    # Load data using separate queries to avoid .or_() issues
+    # Query 1: Items owned by specified users
+    def load_user_items():
+        return client.table(TABLES["items"]).select("*").in_("user_id", all_user_ids).execute()
+
+    # Query 2: Public items
+    def load_public_items():
+        return client.table(TABLES["items"]).select("*").eq("is_public", True).execute()
+
+    # Query 3: Items with no owner (system items)
+    def load_system_items():
+        return client.table(TABLES["items"]).select("*").is_("user_id", "null").execute()
+
+    # Query 4: Recipe edges for specified users
+    def load_user_edges():
+        return client.table(TABLES["recipe_edges"]).select("*").in_("user_id", all_user_ids).execute()
+
+    # Query 5: Public/system recipe edges
+    def load_public_edges():
+        return client.table(TABLES["recipe_edges"]).select("*").eq("is_public", True).execute()
+
+    # Query 6: Recipe nodes for specified users
+    def load_user_nodes():
+        return client.table(TABLES["recipe_nodes"]).select("*").in_("user_id", all_user_ids).execute()
+
+    # Query 7: Public recipe nodes
+    def load_public_nodes():
+        return client.table(TABLES["recipe_nodes"]).select("*").eq("is_public", True).execute()
 
     # Load all data in parallel
-    items_future = asyncio.get_event_loop().run_in_executor(
-        None,
-        lambda: client.table(TABLES["items"]).select("*").or_(access_filter).execute()
-    )
-    edges_future = asyncio.get_event_loop().run_in_executor(
-        None,
-        lambda: client.table(TABLES["recipe_edges"]).select("*").or_(access_filter).execute()
-    )
-    nodes_future = asyncio.get_event_loop().run_in_executor(
-        None,
-        lambda: client.table(TABLES["recipe_nodes"]).select("*").or_(access_filter).execute()
-    )
-    canonicals_future = asyncio.get_event_loop().run_in_executor(
-        None,
-        lambda: client.table("foodos2_canonical_ingredients").select("*").execute()
-    )
-    prefs_future = asyncio.get_event_loop().run_in_executor(
-        None,
-        lambda: client.table("foodos2_user_ingredient_preferences").select("*").eq("user_id", user_id).execute()
-    )
-
-    # Await all
-    items_result, edges_result, nodes_result, canonicals_result, prefs_result = await asyncio.gather(
-        items_future, edges_future, nodes_future, canonicals_future, prefs_future,
+    futures = await asyncio.gather(
+        loop.run_in_executor(None, load_user_items),
+        loop.run_in_executor(None, load_public_items),
+        loop.run_in_executor(None, load_system_items),
+        loop.run_in_executor(None, load_user_edges),
+        loop.run_in_executor(None, load_public_edges),
+        loop.run_in_executor(None, load_user_nodes),
+        loop.run_in_executor(None, load_public_nodes),
+        loop.run_in_executor(None, lambda: client.table("foodos2_canonical_ingredients").select("*").execute()),
+        loop.run_in_executor(None, lambda: client.table("foodos2_user_ingredient_preferences").select("*").eq("user_id", user_id).execute()),
         return_exceptions=True
     )
 
-    # Build maps
+    user_items_result, public_items_result, system_items_result, \
+    user_edges_result, public_edges_result, \
+    user_nodes_result, public_nodes_result, \
+    canonicals_result, prefs_result = futures
+
+    # Merge items from all sources
+    items_result_data = []
+    for result in [user_items_result, public_items_result, system_items_result]:
+        if not isinstance(result, Exception) and result.data:
+            items_result_data.extend(result.data)
+
+    # Merge edges from all sources
+    edges_result_data = []
+    for result in [user_edges_result, public_edges_result]:
+        if not isinstance(result, Exception) and result.data:
+            edges_result_data.extend(result.data)
+
+    # Merge nodes from all sources
+    nodes_result_data = []
+    for result in [user_nodes_result, public_nodes_result]:
+        if not isinstance(result, Exception) and result.data:
+            nodes_result_data.extend(result.data)
+
+    logger.info(f"Loaded {len(items_result_data)} items, {len(edges_result_data)} edges, {len(nodes_result_data)} nodes")
+
+    # Build maps from merged data
     item_map = {}
-    if not isinstance(items_result, Exception):
-        for item in (items_result.data or []):
-            item_map[item["id"]] = item
+    for item in items_result_data:
+        item_map[item["id"]] = item
 
     edges_by_parent = defaultdict(list)
-    if not isinstance(edges_result, Exception):
-        for edge in (edges_result.data or []):
-            edges_by_parent[edge["parent_food_item_id"]].append(edge)
+    for edge in edges_result_data:
+        edges_by_parent[edge["parent_food_item_id"]].append(edge)
 
     # Sort edges by sort_order
     for edges in edges_by_parent.values():
         edges.sort(key=lambda e: e.get("sort_order") or 0)
 
     node_map = {}
-    if not isinstance(nodes_result, Exception):
-        for node in (nodes_result.data or []):
-            node_map[node["food_item_id"]] = node
+    for node in nodes_result_data:
+        node_map[node["food_item_id"]] = node
 
     canonical_map = {}
     if not isinstance(canonicals_result, Exception):
