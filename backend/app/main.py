@@ -21,6 +21,8 @@ from app.config import get_settings
 from app.api import health, usda, ai, cron
 from app.api import nutrition as nutrition_api
 from app.api import recipes as recipes_api
+from app.api import grocery as grocery_api
+from app.api import planning as planning_api
 from app.services.usda import USDAService
 from app.jobs.scheduler import start_scheduler, shutdown_scheduler
 
@@ -115,6 +117,8 @@ app.include_router(ai.router, prefix="/api/ai", tags=["ai"])
 app.include_router(cron.router, prefix="/api/cron", tags=["cron"])
 app.include_router(nutrition_api.router)  # /api/nutrition
 app.include_router(recipes_api.router)  # /api/recipes
+app.include_router(grocery_api.router)  # /api/grocery
+app.include_router(planning_api.router)  # /api/planning
 
 
 @app.get("/")
@@ -122,7 +126,7 @@ async def root():
     """Root endpoint."""
     return {
         "name": "slop-pi",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "description": "Meal planning & nutrition API with comprehensive micronutrient tracking",
         "docs": "/docs",
         "endpoints": {
@@ -131,6 +135,8 @@ async def root():
             "ai": "/api/ai",
             "nutrition": "/api/nutrition",
             "recipes": "/api/recipes",
+            "grocery": "/api/grocery",
+            "planning": "/api/planning",
             "cron": "/api/cron",
         },
     }
