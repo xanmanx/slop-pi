@@ -126,75 +126,58 @@ async def get_recipe_graph_context(
     start = time.time()
 
     client = get_supabase_client()
-    loop = asyncio.get_running_loop()
 
-    # Load data using separate queries to avoid .or_() issues
-    # Query 1: Items owned by specified users
-    def load_user_items():
-        return client.table(TABLES["items"]).select("*").in_("user_id", all_user_ids).execute()
+    # Build OR filter like the web app does - more reliable than separate queries
+    # Format: "user_id.eq.xxx,user_id.is.null,is_public.eq.true"
+    or_clauses = [f"user_id.eq.{uid}" for uid in all_user_ids]
+    or_clauses.append("user_id.is.null")
+    or_clauses.append("is_public.eq.true")
+    or_filter = ",".join(or_clauses)
 
-    # Query 2: Public items
-    def load_public_items():
-        return client.table(TABLES["items"]).select("*").eq("is_public", True).execute()
+    logger.info(f"Using OR filter: {or_filter[:100]}...")
 
-    # Query 3: Items with no owner (system items)
-    def load_system_items():
-        return client.table(TABLES["items"]).select("*").is_("user_id", "null").execute()
+    # Load all data sequentially (more reliable than parallel with shared client)
+    try:
+        items_result = client.table(TABLES["items"]).select("*").or_(or_filter).execute()
+        items_result_data = items_result.data or []
+        logger.info(f"Items query returned {len(items_result_data)} items")
+    except Exception as e:
+        logger.error(f"Items query failed: {e}")
+        items_result_data = []
 
-    # Query 4: Recipe edges for specified users
-    def load_user_edges():
-        return client.table(TABLES["recipe_edges"]).select("*").in_("user_id", all_user_ids).execute()
+    try:
+        edges_result = client.table(TABLES["recipe_edges"]).select("*").or_(or_filter).execute()
+        edges_result_data = edges_result.data or []
+        logger.info(f"Edges query returned {len(edges_result_data)} edges")
+        # Log breakdown
+        user_owned = sum(1 for e in edges_result_data if e.get("user_id") in all_user_ids)
+        public_edges = sum(1 for e in edges_result_data if e.get("is_public") is True)
+        logger.info(f"Edge breakdown - user-owned: {user_owned}, public: {public_edges}, system: {len(edges_result_data) - user_owned - public_edges}")
+    except Exception as e:
+        logger.error(f"Edges query failed: {e}")
+        edges_result_data = []
 
-    # Query 5: Public/system recipe edges
-    def load_public_edges():
-        return client.table(TABLES["recipe_edges"]).select("*").eq("is_public", True).execute()
+    try:
+        nodes_result = client.table(TABLES["recipe_nodes"]).select("*").or_(or_filter).execute()
+        nodes_result_data = nodes_result.data or []
+        logger.info(f"Nodes query returned {len(nodes_result_data)} nodes")
+    except Exception as e:
+        logger.error(f"Nodes query failed: {e}")
+        nodes_result_data = []
 
-    # Query 6: Recipe nodes for specified users
-    def load_user_nodes():
-        return client.table(TABLES["recipe_nodes"]).select("*").in_("user_id", all_user_ids).execute()
+    try:
+        canonicals_result = client.table("foodos2_canonical_ingredients").select("*").execute()
+    except Exception as e:
+        logger.error(f"Canonicals query failed: {e}")
+        canonicals_result = None
 
-    # Query 7: Public recipe nodes
-    def load_public_nodes():
-        return client.table(TABLES["recipe_nodes"]).select("*").eq("is_public", True).execute()
+    try:
+        prefs_result = client.table("foodos2_user_ingredient_preferences").select("*").eq("user_id", user_id).execute()
+    except Exception as e:
+        logger.error(f"Prefs query failed: {e}")
+        prefs_result = None
 
-    # Load all data in parallel
-    futures = await asyncio.gather(
-        loop.run_in_executor(None, load_user_items),
-        loop.run_in_executor(None, load_public_items),
-        loop.run_in_executor(None, load_system_items),
-        loop.run_in_executor(None, load_user_edges),
-        loop.run_in_executor(None, load_public_edges),
-        loop.run_in_executor(None, load_user_nodes),
-        loop.run_in_executor(None, load_public_nodes),
-        loop.run_in_executor(None, lambda: client.table("foodos2_canonical_ingredients").select("*").execute()),
-        loop.run_in_executor(None, lambda: client.table("foodos2_user_ingredient_preferences").select("*").eq("user_id", user_id).execute()),
-        return_exceptions=True
-    )
-
-    user_items_result, public_items_result, system_items_result, \
-    user_edges_result, public_edges_result, \
-    user_nodes_result, public_nodes_result, \
-    canonicals_result, prefs_result = futures
-
-    # Merge items from all sources
-    items_result_data = []
-    for result in [user_items_result, public_items_result, system_items_result]:
-        if not isinstance(result, Exception) and result.data:
-            items_result_data.extend(result.data)
-
-    # Merge edges from all sources
-    edges_result_data = []
-    for result in [user_edges_result, public_edges_result]:
-        if not isinstance(result, Exception) and result.data:
-            edges_result_data.extend(result.data)
-
-    # Merge nodes from all sources
-    nodes_result_data = []
-    for result in [user_nodes_result, public_nodes_result]:
-        if not isinstance(result, Exception) and result.data:
-            nodes_result_data.extend(result.data)
-
-    logger.info(f"Loaded {len(items_result_data)} items, {len(edges_result_data)} edges, {len(nodes_result_data)} nodes")
+    logger.info(f"Graph data loaded: {len(items_result_data)} items, {len(edges_result_data)} edges, {len(nodes_result_data)} nodes")
 
     # Build maps from merged data
     item_map = {}
@@ -214,13 +197,13 @@ async def get_recipe_graph_context(
         node_map[node["food_item_id"]] = node
 
     canonical_map = {}
-    if not isinstance(canonicals_result, Exception):
-        for c in (canonicals_result.data or []):
+    if canonicals_result and canonicals_result.data:
+        for c in canonicals_result.data:
             canonical_map[c["id"]] = c
 
     preference_map = {}
-    if not isinstance(prefs_result, Exception):
-        for p in (prefs_result.data or []):
+    if prefs_result and prefs_result.data:
+        for p in prefs_result.data:
             preference_map[p["canonical_id"]] = p
 
     ctx = RecipeGraphContext(
@@ -329,6 +312,11 @@ async def flatten_recipe(
     # Get root item
     root_item = ctx.item_map.get(recipe_id)
     if not root_item:
+        logger.warning(f"Recipe {recipe_id} not found in item_map (size: {len(ctx.item_map)})")
+        # Debug: Check if item exists with user_id
+        matching_items = [k for k, v in ctx.item_map.items() if v.get("name", "").lower().startswith("berry")]
+        if matching_items:
+            logger.warning(f"Found similar items: {matching_items[:3]}")
         return RecipeFlattened(
             recipe_id=recipe_id,
             recipe_name="Unknown",
@@ -338,6 +326,10 @@ async def flatten_recipe(
             nutrition=RecipeNutrition(),
             cycle_detected=False,
         )
+
+    # Check if this recipe has edges
+    edges_for_recipe = ctx.edges_by_parent.get(recipe_id, [])
+    logger.info(f"Flattening recipe '{root_item.get('name')}' ({recipe_id[:8]}...) - found {len(edges_for_recipe)} edges")
 
     # Flatten the DAG
     ingredients_dict: dict[str, LegacyFlattenedIngredient] = {}
