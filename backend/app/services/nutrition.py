@@ -302,10 +302,34 @@ class NutritionService:
         target_date: date,
         include_supplements: bool = True,
     ) -> DailyNutritionStats:
-        """Get comprehensive nutrition stats for a single day."""
+        """Get comprehensive nutrition stats for a single day.
+
+        Only includes CONSUMED meals:
+        - Manually consumed (is_logged = true)
+        - Auto-consumed (scheduled_time has passed, if auto_consume enabled)
+        """
         client = get_supabase_client()
+        from datetime import datetime
 
         date_str = target_date.isoformat()
+        today = date.today()
+        now = datetime.now()
+        current_time_str = now.strftime("%H:%M:%S")
+
+        # Load user preferences for auto_consume setting
+        auto_consume_enabled = False
+        try:
+            prefs_result = (
+                client.table(TABLES["prefs"])
+                .select("auto_consume, auto_consume_meals")
+                .eq("user_id", user_id)
+                .single()
+                .execute()
+            )
+            if prefs_result.data:
+                auto_consume_enabled = prefs_result.data.get("auto_consume") or prefs_result.data.get("auto_consume_meals") or False
+        except Exception:
+            pass
 
         # Load plan entries for the day
         entries_result = (
@@ -315,7 +339,31 @@ class NutritionService:
             .eq("planned_date", date_str)
             .execute()
         )
-        entries = entries_result.data or []
+        all_entries = entries_result.data or []
+
+        # Filter to only consumed entries
+        entries = []
+        for e in all_entries:
+            is_consumed = False
+
+            # Check manual consumption
+            if e.get("is_logged"):
+                is_consumed = True
+            # Check auto-consumption
+            elif auto_consume_enabled:
+                scheduled_time = e.get("scheduled_time")
+                if target_date < today:
+                    # Past days - all meals are auto-consumed
+                    is_consumed = True
+                elif target_date == today and scheduled_time:
+                    # Today - check if scheduled time has passed
+                    if scheduled_time <= current_time_str:
+                        is_consumed = True
+
+            if is_consumed:
+                entries.append(e)
+
+        logger.debug(f"Daily nutrition: {len(entries)}/{len(all_entries)} entries consumed for {date_str}")
 
         # Load supplements if requested
         supplements = []
