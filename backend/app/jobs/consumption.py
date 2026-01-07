@@ -6,7 +6,7 @@ meals and supplements are marked as consumed as soon as their
 scheduled time passes.
 
 Key features:
-1. Timezone-aware - uses configured timezone for accurate time comparisons
+1. Timezone-aware - reads timezone from user preferences for per-user accuracy
 2. Uses atomic database function - ensures data consistency
 3. Handles both meals and supplements
 4. Idempotent - safe to run multiple times
@@ -27,6 +27,9 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+# Default timezone fallback (used when user hasn't set one)
+DEFAULT_TIMEZONE = "America/New_York"
+
 # Default meal times by slot (used when scheduled_time is not set)
 DEFAULT_SLOT_TIMES = {
     "breakfast": "08:00:00",
@@ -36,9 +39,24 @@ DEFAULT_SLOT_TIMES = {
 }
 
 
-def get_local_now() -> datetime:
-    """Get current time in the configured timezone."""
-    tz = ZoneInfo(settings.timezone)
+def get_user_timezone(prefs: dict | None) -> ZoneInfo:
+    """
+    Get the user's timezone from their preferences.
+    Falls back to DEFAULT_TIMEZONE if not set.
+    """
+    tz_str = prefs.get("timezone") if prefs else None
+    if tz_str:
+        try:
+            return ZoneInfo(tz_str)
+        except Exception as e:
+            logger.warning(f"Invalid timezone '{tz_str}': {e}, using default")
+    return ZoneInfo(DEFAULT_TIMEZONE)
+
+
+def get_local_now(tz: ZoneInfo | None = None) -> datetime:
+    """Get current time in the specified timezone (or default)."""
+    if tz is None:
+        tz = ZoneInfo(DEFAULT_TIMEZONE)
     return datetime.now(tz)
 
 
@@ -108,17 +126,14 @@ async def process_scheduled_consumptions() -> dict:
     It finds meals whose scheduled time has passed and marks them as consumed
     using the atomic database function.
 
+    Each user's timezone is read from their preferences for accurate time comparison.
+
     Returns:
         Dict with processed_count, skipped_count, and any errors
     """
-    logger.info(f"Starting consumption processing (timezone: {settings.timezone})...")
+    logger.info("Starting consumption processing...")
 
     client = get_supabase_client()
-    now = get_local_now()
-    today_str = now.strftime("%Y-%m-%d")
-    current_time_str = now.strftime("%H:%M:%S")
-
-    logger.info(f"Processing for date: {today_str}, time: {current_time_str}")
 
     processed = []
     skipped = []
@@ -146,6 +161,13 @@ async def process_scheduled_consumptions() -> dict:
                 if not auto_consume:
                     logger.debug(f"Auto-consume disabled for user {user_id[:8]}...")
                     continue
+
+                # Get user's timezone for accurate time comparison
+                user_tz = get_user_timezone(prefs)
+                now = get_local_now(user_tz)
+                today_str = now.strftime("%Y-%m-%d")
+
+                logger.debug(f"User {user_id[:8]}... timezone: {user_tz}, date: {today_str}, time: {now.strftime('%H:%M:%S')}")
 
                 # Get plan entries for today that are not batch-prepped
                 # We don't filter by is_logged here - the atomic function handles idempotency
@@ -222,8 +244,7 @@ async def process_scheduled_consumptions() -> dict:
         "error_count": len(errors),
         "processed_entries": processed,
         "errors": errors if errors else None,
-        "timezone": settings.timezone,
-        "processed_at": now.isoformat(),
+        "processed_at": datetime.now(ZoneInfo("UTC")).isoformat(),
     }
 
     logger.info(
@@ -240,12 +261,11 @@ async def process_scheduled_supplements() -> dict:
 
     Similar to meal consumption, but for daily supplements.
     Supplements have a time_of_day field instead of scheduled_time.
+    Each user's timezone is read from their preferences.
     """
-    logger.info(f"Starting supplement processing (timezone: {settings.timezone})...")
+    logger.info("Starting supplement processing...")
 
     client = get_supabase_client()
-    now = get_local_now()
-    today_str = now.strftime("%Y-%m-%d")
 
     processed = []
     skipped = []
@@ -261,6 +281,12 @@ async def process_scheduled_supplements() -> dict:
                 continue
 
             try:
+                # Get user preferences for timezone
+                prefs = await get_user_prefs(user_id)
+                user_tz = get_user_timezone(prefs)
+                now = get_local_now(user_tz)
+                today_str = now.strftime("%Y-%m-%d")
+
                 # Get active supplements for this user
                 result = (
                     client.table(TABLES["supplements"])
@@ -279,7 +305,7 @@ async def process_scheduled_supplements() -> dict:
                     if not time_of_day:
                         continue
 
-                    # Check if time has passed
+                    # Check if time has passed (using user's timezone)
                     if not has_time_passed(time_of_day, now):
                         skipped.append({
                             "supplement_id": supp_id,
@@ -374,8 +400,7 @@ async def process_scheduled_supplements() -> dict:
         "error_count": len(errors),
         "processed_entries": processed,
         "errors": errors if errors else None,
-        "timezone": settings.timezone,
-        "processed_at": now.isoformat(),
+        "processed_at": datetime.now(ZoneInfo("UTC")).isoformat(),
     }
 
     logger.info(

@@ -1,13 +1,12 @@
 """Cron job endpoints - called by system crontab or scheduler."""
 
 from datetime import datetime
-from zoneinfo import ZoneInfo
 import logging
 
 from fastapi import APIRouter, HTTPException, Request, Header
 
 from app.config import get_settings
-from app.jobs.consumption import process_all_consumptions, get_local_now
+from app.jobs.consumption import process_all_consumptions
 from app.jobs.notifications import send_meal_reminders
 
 router = APIRouter()
@@ -66,7 +65,6 @@ async def cron_process_consumptions(
 
     try:
         result = await process_all_consumptions()
-        now = get_local_now()
         logger.info(f"Processed {result['total_processed']} consumptions")
         return {
             "success": True,
@@ -74,8 +72,8 @@ async def cron_process_consumptions(
             "supplements": result.get("supplements", {}),
             "total_processed": result.get("total_processed", 0),
             "total_errors": result.get("total_errors", 0),
-            "timezone": settings.timezone,
-            "timestamp": now.isoformat(),
+            "note": "Timezone is per-user from their preferences",
+            "timestamp": datetime.utcnow().isoformat(),
         }
     except Exception as e:
         logger.error(f"Error processing consumptions: {e}")

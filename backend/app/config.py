@@ -44,12 +44,8 @@ class Settings(BaseSettings):
     data_dir: str = "./data"
     usda_cache_db: str = "./data/usda_cache.db"
 
-    # Timezone for consumption processing
-    # Use IANA timezone names (e.g., "America/Los_Angeles", "America/New_York")
-    # This should match the user's local timezone for accurate meal time comparisons
-    timezone: str = "America/Los_Angeles"
-
     # Consumption processing frequency in minutes
+    # Note: Timezone is now per-user from their preferences (foodos2_preference_profiles.timezone)
     consumption_interval_minutes: int = 2
 
     @property
