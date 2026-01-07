@@ -127,55 +127,88 @@ async def get_recipe_graph_context(
 
     client = get_supabase_client()
 
-    # Build OR filter like the web app does - more reliable than separate queries
-    # Format: "user_id.eq.xxx,user_id.is.null,is_public.eq.true"
-    or_clauses = [f"user_id.eq.{uid}" for uid in all_user_ids]
-    or_clauses.append("user_id.is.null")
-    or_clauses.append("is_public.eq.true")
-    or_filter = ",".join(or_clauses)
+    # Load data with separate queries (sequential for reliability)
+    items_result_data = []
+    edges_result_data = []
+    nodes_result_data = []
 
-    logger.info(f"Using OR filter: {or_filter[:100]}...")
-
-    # Load all data sequentially (more reliable than parallel with shared client)
+    # Query 1: Items owned by specified users
     try:
-        items_result = client.table(TABLES["items"]).select("*").or_(or_filter).execute()
-        items_result_data = items_result.data or []
-        logger.info(f"Items query returned {len(items_result_data)} items")
+        user_items = client.table(TABLES["items"]).select("*").in_("user_id", all_user_ids).execute()
+        items_result_data.extend(user_items.data or [])
+        logger.info(f"User items query returned {len(user_items.data or [])} items for user_ids: {[u[:8] for u in all_user_ids]}")
     except Exception as e:
-        logger.error(f"Items query failed: {e}")
-        items_result_data = []
+        logger.error(f"User items query failed: {e}")
 
+    # Query 2: Public items
     try:
-        edges_result = client.table(TABLES["recipe_edges"]).select("*").or_(or_filter).execute()
-        edges_result_data = edges_result.data or []
-        logger.info(f"Edges query returned {len(edges_result_data)} edges")
-        # Log breakdown
-        user_owned = sum(1 for e in edges_result_data if e.get("user_id") in all_user_ids)
-        public_edges = sum(1 for e in edges_result_data if e.get("is_public") is True)
-        logger.info(f"Edge breakdown - user-owned: {user_owned}, public: {public_edges}, system: {len(edges_result_data) - user_owned - public_edges}")
+        public_items = client.table(TABLES["items"]).select("*").eq("is_public", True).execute()
+        items_result_data.extend(public_items.data or [])
+        logger.info(f"Public items query returned {len(public_items.data or [])} items")
     except Exception as e:
-        logger.error(f"Edges query failed: {e}")
-        edges_result_data = []
+        logger.error(f"Public items query failed: {e}")
 
+    # Query 3: System items (null user_id)
     try:
-        nodes_result = client.table(TABLES["recipe_nodes"]).select("*").or_(or_filter).execute()
-        nodes_result_data = nodes_result.data or []
-        logger.info(f"Nodes query returned {len(nodes_result_data)} nodes")
+        system_items = client.table(TABLES["items"]).select("*").is_("user_id", "null").execute()
+        items_result_data.extend(system_items.data or [])
+        logger.info(f"System items query returned {len(system_items.data or [])} items")
     except Exception as e:
-        logger.error(f"Nodes query failed: {e}")
-        nodes_result_data = []
+        logger.error(f"System items query failed: {e}")
 
+    # Query 4: User recipe edges
+    try:
+        user_edges = client.table(TABLES["recipe_edges"]).select("*").in_("user_id", all_user_ids).execute()
+        edges_result_data.extend(user_edges.data or [])
+        logger.info(f"User edges query returned {len(user_edges.data or [])} edges")
+    except Exception as e:
+        logger.error(f"User edges query failed: {e}")
+
+    # Query 5: Public recipe edges
+    try:
+        public_edges = client.table(TABLES["recipe_edges"]).select("*").eq("is_public", True).execute()
+        edges_result_data.extend(public_edges.data or [])
+        logger.info(f"Public edges query returned {len(public_edges.data or [])} edges")
+    except Exception as e:
+        logger.error(f"Public edges query failed: {e}")
+
+    # Query 6: User recipe nodes
+    try:
+        user_nodes = client.table(TABLES["recipe_nodes"]).select("*").in_("user_id", all_user_ids).execute()
+        nodes_result_data.extend(user_nodes.data or [])
+        logger.info(f"User nodes query returned {len(user_nodes.data or [])} nodes")
+    except Exception as e:
+        logger.error(f"User nodes query failed: {e}")
+
+    # Query 7: Public recipe nodes
+    try:
+        public_nodes = client.table(TABLES["recipe_nodes"]).select("*").eq("is_public", True).execute()
+        nodes_result_data.extend(public_nodes.data or [])
+        logger.info(f"Public nodes query returned {len(public_nodes.data or [])} nodes")
+    except Exception as e:
+        logger.error(f"Public nodes query failed: {e}")
+
+    # Load canonical ingredients and preferences
+    canonicals_result = None
+    prefs_result = None
     try:
         canonicals_result = client.table("foodos2_canonical_ingredients").select("*").execute()
     except Exception as e:
         logger.error(f"Canonicals query failed: {e}")
-        canonicals_result = None
 
     try:
         prefs_result = client.table("foodos2_user_ingredient_preferences").select("*").eq("user_id", user_id).execute()
     except Exception as e:
         logger.error(f"Prefs query failed: {e}")
-        prefs_result = None
+
+    # Deduplicate items by ID (in case of overlap between queries)
+    seen_ids = set()
+    unique_items = []
+    for item in items_result_data:
+        if item["id"] not in seen_ids:
+            seen_ids.add(item["id"])
+            unique_items.append(item)
+    items_result_data = unique_items
 
     logger.info(f"Graph data loaded: {len(items_result_data)} items, {len(edges_result_data)} edges, {len(nodes_result_data)} nodes")
 
