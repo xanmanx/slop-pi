@@ -38,6 +38,7 @@ from app.models.nutrition import (
     categorize_nutrient,
 )
 from app.services.supabase import get_supabase_client, TABLES
+from app.services.recipes import flatten_recipe_auto_owner
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -368,21 +369,47 @@ class NutritionService:
 
             scale = e.get("scale_factor") or 1
 
-            # For ingredients/products, scale_factor is grams
-            # For meals, it's a multiplier on base_calories
+            # For ingredients/products, scale_factor is grams - use directly
             if item.get("kind") in ("ingredient", "product"):
-                amount_g = scale
+                items_list.append(item)
+                amounts_list.append(scale)
             else:
-                # Estimate grams from calories
-                base_cal = item.get("base_calories") or item.get("calories_per_100g") or 100
-                cal_per_100g = item.get("calories_per_100g") or base_cal
-                if cal_per_100g > 0:
-                    amount_g = (base_cal * scale * 100) / cal_per_100g
-                else:
-                    amount_g = 100 * scale
-
-            items_list.append(item)
-            amounts_list.append(amount_g)
+                # For meals/snacks, flatten the recipe to get actual ingredients
+                # This ensures we capture micronutrients from the ingredients
+                try:
+                    flattened = await flatten_recipe_auto_owner(
+                        recipe_id=item["id"],
+                        user_id=user_id,
+                        scale_factor=scale,
+                        include_micronutrients=True,
+                        include_rda=False,  # We'll calculate RDA later
+                    )
+                    # Add each ingredient with its scaled amount
+                    for ing in flattened.ingredients:
+                        # Convert ingredient to dict format expected by nutrition calc
+                        ing_dict = {
+                            "id": ing.ingredient_id,
+                            "name": ing.ingredient_name,
+                            "kind": ing.ingredient_kind,
+                            "calories_per_100g": ing.calories_per_100g,
+                            "protein_g_per_100g": ing.protein_g_per_100g,
+                            "carbs_g_per_100g": ing.carbs_g_per_100g,
+                            "fat_g_per_100g": ing.fat_g_per_100g,
+                            "micronutrients": ing.micronutrients or [],
+                        }
+                        items_list.append(ing_dict)
+                        amounts_list.append(ing.amount_g)
+                except Exception as flatten_err:
+                    logger.warning(f"Failed to flatten recipe {item['id']}: {flatten_err}")
+                    # Fallback: use the meal item directly (no micronutrients)
+                    base_cal = item.get("base_calories") or item.get("calories_per_100g") or 100
+                    cal_per_100g = item.get("calories_per_100g") or base_cal
+                    if cal_per_100g > 0:
+                        amount_g = (base_cal * scale * 100) / cal_per_100g
+                    else:
+                        amount_g = 100 * scale
+                    items_list.append(item)
+                    amounts_list.append(amount_g)
 
             if e.get("is_logged"):
                 meals_logged += 1
