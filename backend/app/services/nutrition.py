@@ -87,11 +87,14 @@ USELESS_NUTRIENTS = {
 
 
 class NutritionService:
-    """High-performance nutrition calculation service."""
+    """High-performance nutrition calculation service.
+
+    Optimized for Pi 4/5 with 8GB RAM - can cache aggressively.
+    """
 
     def __init__(self):
         self._cache: dict = {}
-        self._cache_ttl = 300  # 5 minutes
+        self._cache_ttl = 900  # 15 minutes (was 5) - more aggressive caching
 
     # =========================================================================
     # Core Calculation Methods

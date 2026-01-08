@@ -34,13 +34,14 @@ logger = logging.getLogger(__name__)
 
 # Recipe graph cache (cache_key -> context)
 # Cache key includes user_id and any additional owner IDs
+# Optimized for Pi 4/5 with 8GB RAM - can cache aggressively
 _graph_cache: dict[str, tuple[float, RecipeGraphContext]] = {}
-_GRAPH_CACHE_TTL = 300  # 5 minutes
+_GRAPH_CACHE_TTL = 1800  # 30 minutes (was 5) - graphs rarely change
 
 # Flattened recipe cache ((recipe_id, user_id, scale) -> result)
 _flatten_cache: dict[tuple, tuple[float, RecipeFlattened]] = {}
-_FLATTEN_CACHE_TTL = 600  # 10 minutes
-_MAX_FLATTEN_CACHE_SIZE = 500
+_FLATTEN_CACHE_TTL = 1800  # 30 minutes (was 10) - recipe contents rarely change
+_MAX_FLATTEN_CACHE_SIZE = 2000  # Increased from 500 - plenty of RAM available
 
 
 def clear_recipe_caches(user_id: Optional[str] = None):
