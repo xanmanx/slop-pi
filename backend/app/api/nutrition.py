@@ -120,6 +120,73 @@ async def get_weekly_nutrition(
     return await svc.get_nutrition_analytics(user_id, start, end)
 
 
+@router.get("/debug/{user_id}")
+async def debug_nutrition(
+    user_id: str,
+    target_date: Optional[str] = Query(None),
+):
+    """Debug endpoint to check what data we have for nutrition calculation."""
+    from app.services.supabase import get_supabase_client, TABLES
+    from app.services.recipes import flatten_recipe_auto_owner
+
+    client = get_supabase_client()
+    date_str = target_date or date.today().isoformat()
+
+    # Get plan entries
+    entries_result = client.table(TABLES["plan"]).select("*").eq("user_id", user_id).eq("planned_date", date_str).execute()
+    entries = entries_result.data or []
+
+    # Get food items
+    food_ids = [e["food_item_id"] for e in entries]
+    items_result = client.table(TABLES["items"]).select("id, name, kind, micronutrients").in_("id", food_ids).execute()
+    items = {i["id"]: i for i in (items_result.data or [])}
+
+    debug_info = {
+        "date": date_str,
+        "entries_count": len(entries),
+        "entries": [],
+    }
+
+    for e in entries:
+        item = items.get(e["food_item_id"])
+        entry_info = {
+            "food_item_id": e["food_item_id"],
+            "name": item.get("name") if item else "NOT FOUND",
+            "kind": item.get("kind") if item else None,
+            "scale_factor": e.get("scale_factor"),
+            "is_logged": e.get("is_logged"),
+            "has_micronutrients": bool(item.get("micronutrients")) if item else False,
+            "micronutrients_count": len(item.get("micronutrients") or []) if item else 0,
+        }
+
+        # If it's a recipe, try to flatten it
+        if item and item.get("kind") not in ("ingredient", "product"):
+            try:
+                flattened = await flatten_recipe_auto_owner(
+                    recipe_id=item["id"],
+                    user_id=user_id,
+                    scale_factor=1.0,
+                    include_micronutrients=True,
+                )
+                entry_info["flattened_ingredients"] = len(flattened.ingredients)
+                entry_info["ingredients_with_micros"] = sum(
+                    1 for ing in flattened.ingredients if ing.micronutrients
+                )
+                # Sample first ingredient
+                if flattened.ingredients:
+                    first = flattened.ingredients[0]
+                    entry_info["sample_ingredient"] = {
+                        "name": first.ingredient_name,
+                        "micronutrients_count": len(first.micronutrients or []),
+                    }
+            except Exception as err:
+                entry_info["flatten_error"] = str(err)
+
+        debug_info["entries"].append(entry_info)
+
+    return debug_info
+
+
 @router.get("/rda")
 async def get_rda_reference():
     """Get RDA (Recommended Daily Allowance) reference data.
