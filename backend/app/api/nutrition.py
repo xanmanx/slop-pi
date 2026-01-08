@@ -35,6 +35,9 @@ async def get_daily_nutrition(
     - Vitamin and mineral scores
     - Comparison to target calories
     """
+    import logging
+    logger = logging.getLogger(__name__)
+
     if target_date:
         try:
             parsed_date = date.fromisoformat(target_date)
@@ -43,8 +46,12 @@ async def get_daily_nutrition(
     else:
         parsed_date = date.today()
 
-    svc = get_nutrition_service()
-    return await svc.get_daily_stats(user_id, parsed_date, include_supplements, include_planned)
+    try:
+        svc = get_nutrition_service()
+        return await svc.get_daily_stats(user_id, parsed_date, include_supplements, include_planned)
+    except Exception as e:
+        logger.error(f"Error getting daily nutrition for {user_id} on {parsed_date}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get nutrition: {str(e)}")
 
 
 @router.get("/analytics/{user_id}")
