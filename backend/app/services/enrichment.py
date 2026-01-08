@@ -259,19 +259,18 @@ async def ensure_ingredients_enriched(item_map: dict) -> dict:
     if not to_enrich:
         return item_map
 
-    # Enrich in background (don't block the request)
-    enriched_count = await enrich_ingredients_batch(to_enrich)
-
-    if enriched_count > 0:
-        # Reload enriched items from database
-        client = get_supabase_client()
-        enriched_ids = [ing["id"] for ing in to_enrich]
-
-        try:
-            result = client.table(TABLES["items"]).select("*").in_("id", enriched_ids).execute()
-            for item in result.data or []:
-                item_map[item["id"]] = item
-        except Exception as e:
-            logger.error(f"Failed to reload enriched items: {e}")
+    # Enrich in background - don't block the request
+    # The enrichment will happen async and be available on next request
+    logger.info(f"Scheduling background enrichment for {len(to_enrich)} ingredients")
+    asyncio.create_task(_enrich_background(to_enrich))
 
     return item_map
+
+
+async def _enrich_background(to_enrich: list[dict]) -> None:
+    """Background task to enrich ingredients without blocking requests."""
+    try:
+        enriched_count = await enrich_ingredients_batch(to_enrich)
+        logger.info(f"Background enrichment complete: {enriched_count}/{len(to_enrich)} enriched")
+    except Exception as e:
+        logger.error(f"Background enrichment failed: {e}")
