@@ -221,12 +221,13 @@ async def get_recipe_graph_context(
             unique_edges.append(edge)
     edges_result_data = unique_edges
 
-    # Deduplicate nodes by ID (in case of overlap between user and public queries)
+    # Deduplicate nodes by food_item_id (recipe_nodes uses food_item_id as key, not id)
     seen_node_ids = set()
     unique_nodes = []
     for node in nodes_result_data:
-        if node["id"] not in seen_node_ids:
-            seen_node_ids.add(node["id"])
+        node_key = node.get("food_item_id")
+        if node_key and node_key not in seen_node_ids:
+            seen_node_ids.add(node_key)
             unique_nodes.append(node)
     nodes_result_data = unique_nodes
 
