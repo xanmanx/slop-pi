@@ -25,6 +25,7 @@ async def get_daily_nutrition(
     user_id: str,
     target_date: Optional[str] = Query(None, description="Date in YYYY-MM-DD format"),
     include_supplements: bool = Query(True),
+    include_planned: bool = Query(True, description="Include all planned meals, not just consumed"),
 ) -> DailyNutritionStats:
     """Get comprehensive nutrition stats for a single day.
 
@@ -43,7 +44,7 @@ async def get_daily_nutrition(
         parsed_date = date.today()
 
     svc = get_nutrition_service()
-    return await svc.get_daily_stats(user_id, parsed_date, include_supplements)
+    return await svc.get_daily_stats(user_id, parsed_date, include_supplements, include_planned)
 
 
 @router.get("/analytics/{user_id}")

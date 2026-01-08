@@ -301,10 +301,12 @@ class NutritionService:
         user_id: str,
         target_date: date,
         include_supplements: bool = True,
+        include_planned: bool = True,
     ) -> DailyNutritionStats:
         """Get comprehensive nutrition stats for a single day.
 
-        Only includes CONSUMED meals:
+        If include_planned=True (default): includes ALL planned meals for the day.
+        If include_planned=False: only includes CONSUMED meals:
         - Manually consumed (is_logged = true)
         - Auto-consumed (scheduled_time has passed, if auto_consume enabled)
         """
@@ -357,33 +359,39 @@ class NutritionService:
         except Exception as e:
             logger.debug(f"Could not load consumption records: {e}")
 
-        # Filter to only consumed entries
-        entries = []
-        for e in all_entries:
-            is_consumed = False
-            entry_id = e.get("id")
+        # Filter entries based on include_planned flag
+        if include_planned:
+            # Include ALL planned entries for the day
+            entries = all_entries
+            logger.info(f"Daily nutrition: including all {len(entries)} planned entries for {date_str}")
+        else:
+            # Filter to only consumed entries
+            entries = []
+            for e in all_entries:
+                is_consumed = False
+                entry_id = e.get("id")
 
-            # Check if consumed via consumption table (auto or manual)
-            if entry_id in consumed_entry_ids:
-                is_consumed = True
-            # Check is_logged flag (manual flag on entry)
-            elif e.get("is_logged"):
-                is_consumed = True
-            # Check auto-consumption by time (fallback if consumption record missing)
-            elif auto_consume_enabled:
-                scheduled_time = e.get("scheduled_time")
-                if target_date < today:
-                    # Past days - all meals are auto-consumed
+                # Check if consumed via consumption table (auto or manual)
+                if entry_id in consumed_entry_ids:
                     is_consumed = True
-                elif target_date == today and scheduled_time:
-                    # Today - check if scheduled time has passed
-                    if scheduled_time <= current_time_str:
+                # Check is_logged flag (manual flag on entry)
+                elif e.get("is_logged"):
+                    is_consumed = True
+                # Check auto-consumption by time (fallback if consumption record missing)
+                elif auto_consume_enabled:
+                    scheduled_time = e.get("scheduled_time")
+                    if target_date < today:
+                        # Past days - all meals are auto-consumed
                         is_consumed = True
+                    elif target_date == today and scheduled_time:
+                        # Today - check if scheduled time has passed
+                        if scheduled_time <= current_time_str:
+                            is_consumed = True
 
-            if is_consumed:
-                entries.append(e)
+                if is_consumed:
+                    entries.append(e)
 
-        logger.info(f"Daily nutrition: {len(entries)}/{len(all_entries)} entries consumed for {date_str} (consumed_ids: {len(consumed_entry_ids)})")
+            logger.info(f"Daily nutrition: {len(entries)}/{len(all_entries)} entries consumed for {date_str} (consumed_ids: {len(consumed_entry_ids)})")
 
         # Load supplements if requested
         supplements = []
