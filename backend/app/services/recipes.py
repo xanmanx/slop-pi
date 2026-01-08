@@ -23,6 +23,7 @@ from app.models.recipes import (
     RecipeFlattened,
 )
 from app.services.supabase import get_supabase_client, TABLES
+from app.services.enrichment import ensure_ingredients_enriched
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +235,9 @@ async def get_recipe_graph_context(
     item_map = {}
     for item in items_result_data:
         item_map[item["id"]] = item
+
+    # Auto-enrich ingredients missing micronutrients
+    item_map = await ensure_ingredients_enriched(item_map)
 
     edges_by_parent = defaultdict(list)
     for edge in edges_result_data:
