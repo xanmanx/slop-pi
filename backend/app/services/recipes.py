@@ -210,6 +210,24 @@ async def get_recipe_graph_context(
             unique_items.append(item)
     items_result_data = unique_items
 
+    # Deduplicate edges by ID (in case of overlap between user and public queries)
+    seen_edge_ids = set()
+    unique_edges = []
+    for edge in edges_result_data:
+        if edge["id"] not in seen_edge_ids:
+            seen_edge_ids.add(edge["id"])
+            unique_edges.append(edge)
+    edges_result_data = unique_edges
+
+    # Deduplicate nodes by ID (in case of overlap between user and public queries)
+    seen_node_ids = set()
+    unique_nodes = []
+    for node in nodes_result_data:
+        if node["id"] not in seen_node_ids:
+            seen_node_ids.add(node["id"])
+            unique_nodes.append(node)
+    nodes_result_data = unique_nodes
+
     logger.info(f"Graph data loaded: {len(items_result_data)} items, {len(edges_result_data)} edges, {len(nodes_result_data)} nodes")
 
     # Build maps from merged data
