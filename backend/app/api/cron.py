@@ -1,6 +1,6 @@
 """Cron job endpoints - called by system crontab or scheduler."""
 
-from datetime import datetime
+from datetime import datetime, date
 import logging
 
 from fastapi import APIRouter, HTTPException, Request, Header
@@ -8,6 +8,9 @@ from fastapi import APIRouter, HTTPException, Request, Header
 from app.config import get_settings
 from app.jobs.consumption import process_all_consumptions
 from app.jobs.notifications import send_meal_reminders
+from app.services.notifications import get_notification_service
+from app.services.nutrition import get_nutrition_service
+from app.services.supabase import get_all_users, get_user_prefs
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -118,18 +121,99 @@ async def cron_daily_summary(
     x_cron_secret: str | None = Header(None),
 ):
     """
-    Send daily nutrition summary.
+    Send daily nutrition summary to all users.
 
     Call at end of day:
     0 21 * * * curl -s http://localhost:8000/api/cron/daily-summary
+
+    Processes each user's daily nutrition and sends a push notification
+    via ntfy.sh with their calorie/protein intake and goal comparison.
     """
     if not verify_cron_auth(request, authorization, x_cron_secret):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    # TODO: Implement daily summary
+    logger.info("Starting daily summary job...")
+
+    notification_service = get_notification_service()
+    nutrition_service = get_nutrition_service()
+
+    # Get all users
+    users = await get_all_users()
+    logger.info(f"Processing daily summary for {len(users)} users")
+
+    today = date.today()
+    summaries_sent = 0
+    errors = 0
+    results = []
+
+    for user in users:
+        user_id = user.get("user_id")
+        if not user_id:
+            continue
+
+        try:
+            # Get user's daily nutrition stats (only consumed, not planned)
+            stats = await nutrition_service.get_daily_stats(
+                user_id=user_id,
+                target_date=today,
+                include_supplements=True,
+                include_planned=False,  # Only consumed meals
+            )
+
+            # Get user prefs for target calories
+            prefs = await get_user_prefs(user_id)
+            target_calories = prefs.get("daily_calories") if prefs else None
+
+            if not target_calories:
+                target_calories = 2000  # Default fallback
+
+            # Calculate values
+            calories_consumed = int(stats.nutrition.macros.calories)
+            protein_g = int(stats.nutrition.macros.protein_g)
+            meals_logged = stats.meals_logged or 0
+
+            # Send notification
+            sent = await notification_service.send_daily_summary(
+                calories_consumed=calories_consumed,
+                calories_target=target_calories,
+                protein_g=protein_g,
+                meals_logged=meals_logged,
+            )
+
+            if sent:
+                summaries_sent += 1
+                results.append({
+                    "user_id": user_id[:8] + "...",
+                    "calories": calories_consumed,
+                    "target": target_calories,
+                    "protein_g": protein_g,
+                    "meals": meals_logged,
+                    "sent": True,
+                })
+            else:
+                results.append({
+                    "user_id": user_id[:8] + "...",
+                    "sent": False,
+                    "reason": "notification_disabled",
+                })
+
+        except Exception as e:
+            errors += 1
+            logger.error(f"Error processing daily summary for user {user_id[:8]}...: {e}")
+            results.append({
+                "user_id": user_id[:8] + "...",
+                "sent": False,
+                "error": str(e),
+            })
+
+    logger.info(f"Daily summary complete: {summaries_sent} sent, {errors} errors")
+
     return {
         "success": True,
-        "message": "Daily summary not yet implemented",
+        "summaries_sent": summaries_sent,
+        "errors": errors,
+        "total_users": len(users),
+        "results": results,
         "timestamp": datetime.utcnow().isoformat(),
     }
 

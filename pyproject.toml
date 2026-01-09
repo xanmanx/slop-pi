@@ -1,7 +1,7 @@
 [project]
 name = "slop-pi"
-version = "2.0.0"
-description = "FastAPI backend for slop - meal planning & nutrition tracking with comprehensive micronutrient analytics"
+version = "2.2.0"
+description = "FastAPI backend for slop - meal planning & nutrition tracking with barcode lookup and comprehensive micronutrient analytics"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

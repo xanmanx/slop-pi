@@ -24,7 +24,9 @@ from app.api import recipes as recipes_api
 from app.api import grocery as grocery_api
 from app.api import planning as planning_api
 from app.api import batch_prep as batch_prep_api
+from app.api import barcode as barcode_api
 from app.services.usda import USDAService
+from app.services.barcode import BarcodeService
 from app.jobs.scheduler import start_scheduler, shutdown_scheduler
 
 settings = get_settings()
@@ -48,6 +50,12 @@ async def lifespan(app: FastAPI):
     app.state.usda_service = usda_service
     logger.info("USDA cache initialized")
 
+    # Initialize Barcode cache
+    barcode_service = BarcodeService()
+    await barcode_service.init_cache()
+    app.state.barcode_service = barcode_service
+    logger.info("Barcode cache initialized")
+
     # Start background scheduler
     start_scheduler()
     logger.info("Scheduler started")
@@ -58,6 +66,7 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down slop-pi backend...")
     shutdown_scheduler()
     await usda_service.close()
+    await barcode_service.close()
 
 
 app = FastAPI(
@@ -90,7 +99,7 @@ async def verify_api_key(request: Request, call_next):
     public_paths = ["/", "/health", "/health/detailed", "/docs", "/openapi.json", "/redoc"]
 
     # Also allow recipe endpoints (secured by user_id in payload)
-    recipe_prefixes = ["/api/recipes/", "/api/nutrition/", "/api/grocery/", "/api/planning/", "/api/batch-prep/"]
+    recipe_prefixes = ["/api/recipes/", "/api/nutrition/", "/api/grocery/", "/api/planning/", "/api/batch-prep/", "/api/barcode/"]
     if any(request.url.path.startswith(prefix) for prefix in recipe_prefixes):
         return await call_next(request)
 
@@ -126,6 +135,7 @@ app.include_router(recipes_api.router)  # /api/recipes
 app.include_router(grocery_api.router)  # /api/grocery
 app.include_router(planning_api.router)  # /api/planning
 app.include_router(batch_prep_api.router)  # /api/batch-prep
+app.include_router(barcode_api.router)  # /api/barcode
 
 
 @app.get("/")
@@ -133,7 +143,7 @@ async def root():
     """Root endpoint."""
     return {
         "name": "slop-pi",
-        "version": "2.1.0",
+        "version": "2.2.0",
         "description": "Meal planning & nutrition API with comprehensive micronutrient tracking",
         "docs": "/docs",
         "endpoints": {
@@ -145,6 +155,7 @@ async def root():
             "grocery": "/api/grocery",
             "planning": "/api/planning",
             "batch-prep": "/api/batch-prep",
+            "barcode": "/api/barcode",
             "cron": "/api/cron",
         },
     }

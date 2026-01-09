@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     data_dir: str = "./data"
     usda_cache_db: str = "./data/usda_cache.db"
 
+    # Feature Flags
+    feature_barcode_lookup: bool = True
+    feature_receipt_ocr: bool = False  # Phase 2
+    feature_price_tracking: bool = False  # Phase 2
+    feature_expiration_dates: bool = False  # Phase 2
+    feature_inventory_prediction: bool = False  # Phase 3
+    feature_drinks_caffeine: bool = False  # Phase 3
+
     # Consumption processing frequency in minutes
     # Note: Timezone is now per-user from their preferences (foodos2_preference_profiles.timezone)
     consumption_interval_minutes: int = 2
