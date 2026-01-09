@@ -23,6 +23,7 @@ from app.api import nutrition as nutrition_api
 from app.api import recipes as recipes_api
 from app.api import grocery as grocery_api
 from app.api import planning as planning_api
+from app.api import batch_prep as batch_prep_api
 from app.services.usda import USDAService
 from app.jobs.scheduler import start_scheduler, shutdown_scheduler
 
@@ -89,7 +90,7 @@ async def verify_api_key(request: Request, call_next):
     public_paths = ["/", "/health", "/health/detailed", "/docs", "/openapi.json", "/redoc"]
 
     # Also allow recipe endpoints (secured by user_id in payload)
-    recipe_prefixes = ["/api/recipes/", "/api/nutrition/", "/api/grocery/", "/api/planning/"]
+    recipe_prefixes = ["/api/recipes/", "/api/nutrition/", "/api/grocery/", "/api/planning/", "/api/batch-prep/"]
     if any(request.url.path.startswith(prefix) for prefix in recipe_prefixes):
         return await call_next(request)
 
@@ -124,6 +125,7 @@ app.include_router(nutrition_api.router)  # /api/nutrition
 app.include_router(recipes_api.router)  # /api/recipes
 app.include_router(grocery_api.router)  # /api/grocery
 app.include_router(planning_api.router)  # /api/planning
+app.include_router(batch_prep_api.router)  # /api/batch-prep
 
 
 @app.get("/")
@@ -142,6 +144,7 @@ async def root():
             "recipes": "/api/recipes",
             "grocery": "/api/grocery",
             "planning": "/api/planning",
+            "batch-prep": "/api/batch-prep",
             "cron": "/api/cron",
         },
     }
