@@ -22,11 +22,230 @@ from app.models.receipts import (
     ReceiptScanResponse,
     ReceiptConfirmResponse,
     ReceiptStats,
+    ResolutionStatus,
+    StoreType,
+    ProductCodeType,
+    ExtractedProductCode,
 )
 from app.services.supabase import get_supabase_client, TABLES
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+# =============================================================================
+# Product Code Extraction
+# =============================================================================
+
+
+class ProductCodeExtractor:
+    """Extract UPC/PLU/EAN codes from receipt OCR text."""
+
+    # Patterns for various product code formats
+    PATTERNS = [
+        # UPC-A: 12 digits (most common in US)
+        (r"\b(\d{12})\b", ProductCodeType.UPC_A),
+        # EAN-13: 13 digits (international)
+        (r"\b(\d{13})\b", ProductCodeType.EAN_13),
+        # UPC with spaces/dashes (some receipts format this way)
+        (r"\b(\d{1,6}[-\s]\d{5,6})\b", ProductCodeType.UPC_A),
+        # PLU codes: 4-5 digits, often prefixed with PLU or #
+        (r"\bPLU[:\s#]*(\d{4,5})\b", ProductCodeType.PLU),
+        (r"\b#(\d{4,5})\b", ProductCodeType.PLU),
+        # UPC-E: 8 digits (compressed format)
+        (r"\b(\d{8})\b", ProductCodeType.UPC_E),
+    ]
+
+    def extract_codes(self, text: str) -> list[ExtractedProductCode]:
+        """Extract all potential product codes from OCR text."""
+        if not text:
+            return []
+
+        codes = []
+        seen = set()  # Avoid duplicates
+
+        for pattern, code_type in self.PATTERNS:
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                raw_code = match.group(1)
+                normalized = self._normalize(raw_code)
+
+                # Skip if we've already seen this code
+                if normalized in seen:
+                    continue
+
+                # Validate based on code type
+                if self._validate(normalized, code_type):
+                    seen.add(normalized)
+                    codes.append(
+                        ExtractedProductCode(
+                            code=normalized,
+                            code_type=code_type,
+                            confidence=self._calculate_confidence(normalized, code_type),
+                            source_text=match.group(0),
+                        )
+                    )
+
+        # Sort by confidence (highest first)
+        codes.sort(key=lambda x: x.confidence, reverse=True)
+        return codes
+
+    def _normalize(self, code: str) -> str:
+        """Normalize code to digits only."""
+        return "".join(c for c in code if c.isdigit())
+
+    def _validate(self, code: str, code_type: ProductCodeType) -> bool:
+        """Validate product code based on type."""
+        if code_type == ProductCodeType.PLU:
+            # PLU codes are 4-5 digits, no checksum
+            return 4 <= len(code) <= 5
+
+        if code_type == ProductCodeType.UPC_A:
+            if len(code) != 12:
+                return False
+            return self._validate_upc_checksum(code)
+
+        if code_type == ProductCodeType.EAN_13:
+            if len(code) != 13:
+                return False
+            return self._validate_ean_checksum(code)
+
+        if code_type == ProductCodeType.UPC_E:
+            # UPC-E is 8 digits, checksum validation is complex
+            return len(code) == 8
+
+        return True
+
+    def _validate_upc_checksum(self, code: str) -> bool:
+        """Validate UPC-A check digit using standard algorithm."""
+        if len(code) != 12:
+            return False
+
+        try:
+            digits = [int(d) for d in code]
+            # Sum of odd positions * 3 + sum of even positions
+            odd_sum = sum(digits[i] for i in range(0, 11, 2))
+            even_sum = sum(digits[i] for i in range(1, 11, 2))
+            total = odd_sum * 3 + even_sum
+            check_digit = (10 - (total % 10)) % 10
+            return check_digit == digits[11]
+        except (ValueError, IndexError):
+            return False
+
+    def _validate_ean_checksum(self, code: str) -> bool:
+        """Validate EAN-13 check digit."""
+        if len(code) != 13:
+            return False
+
+        try:
+            digits = [int(d) for d in code]
+            # Alternating weights of 1 and 3
+            total = sum(d * (1 if i % 2 == 0 else 3) for i, d in enumerate(digits[:12]))
+            check_digit = (10 - (total % 10)) % 10
+            return check_digit == digits[12]
+        except (ValueError, IndexError):
+            return False
+
+    def _calculate_confidence(self, code: str, code_type: ProductCodeType) -> float:
+        """Calculate confidence score for extracted code."""
+        # Base confidence by code type
+        if code_type == ProductCodeType.UPC_A and self._validate_upc_checksum(code):
+            return 0.95  # High confidence for valid UPC
+        if code_type == ProductCodeType.EAN_13 and self._validate_ean_checksum(code):
+            return 0.95
+        if code_type == ProductCodeType.PLU:
+            return 0.7  # PLU codes are less specific
+        if code_type == ProductCodeType.UPC_E:
+            return 0.6  # UPC-E is less common, lower confidence
+
+        return 0.5  # Default moderate confidence
+
+
+# =============================================================================
+# Store Classification
+# =============================================================================
+
+
+class StoreClassifier:
+    """Classify store type from store name."""
+
+    PATTERNS = {
+        StoreType.GROCERY: [
+            "kroger",
+            "safeway",
+            "publix",
+            "albertsons",
+            "vons",
+            "ralphs",
+            "fry's",
+            "king soopers",
+            "stop & shop",
+            "stop and shop",
+            "giant",
+            "h-e-b",
+            "heb",
+            "meijer",
+            "wegmans",
+            "aldi",
+            "lidl",
+            "food lion",
+            "harris teeter",
+            "piggly wiggly",
+            "winn-dixie",
+            "winn dixie",
+            "shoprite",
+            "acme",
+            "jewel-osco",
+            "jewel osco",
+        ],
+        StoreType.WAREHOUSE: [
+            "costco",
+            "sam's club",
+            "sams club",
+            "bj's",
+            "bjs",
+        ],
+        StoreType.SPECIALTY: [
+            "whole foods",
+            "trader joe",
+            "sprouts",
+            "natural grocers",
+            "earth fare",
+            "fresh market",
+            "bristol farms",
+        ],
+        StoreType.CONVENIENCE: [
+            "7-eleven",
+            "7 eleven",
+            "wawa",
+            "sheetz",
+            "circle k",
+            "am/pm",
+            "ampm",
+            "quick trip",
+            "quiktrip",
+            "casey's",
+            "caseys",
+        ],
+        StoreType.PHARMACY: [
+            "cvs",
+            "walgreens",
+            "rite aid",
+            "rite-aid",
+        ],
+    }
+
+    def classify(self, store_name: str) -> StoreType:
+        """Classify store type from name."""
+        if not store_name:
+            return StoreType.UNKNOWN
+
+        name_lower = store_name.lower()
+
+        for store_type, patterns in self.PATTERNS.items():
+            if any(pattern in name_lower for pattern in patterns):
+                return store_type
+
+        return StoreType.UNKNOWN
 
 
 class ReceiptService:
@@ -78,11 +297,19 @@ class ReceiptService:
         mime_type: str,
         user_id: str,
         auto_match: bool = True,
+        auto_resolve: bool = True,
     ) -> ReceiptScanResponse:
         """
         Scan a receipt image and extract line items.
 
-        Returns parsed receipt with optional auto-matching to food database.
+        Returns parsed receipt with optional auto-matching and resolution.
+
+        Args:
+            image_bytes: Raw image data
+            mime_type: Image MIME type
+            user_id: User ID for RLS
+            auto_match: Whether to fuzzy match items to food database
+            auto_resolve: Whether to run resolution chain (barcode extraction, OFF lookup)
         """
         start_time = time.time()
 
@@ -94,6 +321,7 @@ class ReceiptService:
 
         try:
             from google.cloud import documentai
+            from app.services.resolution import get_resolution_service
 
             # Process document
             request = documentai.ProcessRequest(
@@ -109,7 +337,12 @@ class ReceiptService:
             # Parse the document
             receipt = await self._parse_document(document, user_id)
 
-            # Auto-match items to food database
+            # Classify store type
+            if receipt.store_name:
+                store_classifier = StoreClassifier()
+                receipt.store_type = store_classifier.classify(receipt.store_name)
+
+            # Auto-match items to food database (existing fuzzy matching)
             items_matched = 0
             items_unmatched = 0
             if auto_match and receipt.line_items:
@@ -117,8 +350,24 @@ class ReceiptService:
                     matched = await self._match_to_food_item(item, user_id)
                     if matched:
                         items_matched += 1
+                        item.resolution_status = ResolutionStatus.FUZZY_MATCHED
+                        item.resolution_method = "fuzzy_match"
                     else:
                         items_unmatched += 1
+
+            # Run resolution chain for unmatched items
+            items_barcode_matched = 0
+            items_needs_manual = 0
+            if auto_resolve and receipt.line_items:
+                resolution_service = get_resolution_service()
+                receipt = await resolution_service.batch_resolve(receipt, user_id)
+
+                # Count resolution results
+                for item in receipt.line_items:
+                    if item.resolution_status == ResolutionStatus.BARCODE_MATCHED:
+                        items_barcode_matched += 1
+                    elif item.needs_manual_entry:
+                        items_needs_manual += 1
 
             # Save receipt to database
             receipt_id = await self._save_receipt(receipt)
@@ -132,6 +381,8 @@ class ReceiptService:
                 receipt=receipt,
                 items_matched=items_matched,
                 items_unmatched=items_unmatched,
+                items_barcode_matched=items_barcode_matched,
+                items_needs_manual=items_needs_manual,
                 processing_time_ms=processing_time,
             )
 
@@ -312,6 +563,7 @@ class ReceiptService:
 
     async def _save_receipt(self, receipt: ParsedReceipt) -> str:
         """Save receipt to database."""
+        import json
         client = get_supabase_client()
 
         # Insert receipt
@@ -319,6 +571,7 @@ class ReceiptService:
             "user_id": receipt.user_id,
             "store_name": receipt.store_name,
             "store_address": receipt.store_address,
+            "store_type": receipt.store_type.value if receipt.store_type else "unknown",
             "purchase_date": receipt.purchase_date.isoformat() if receipt.purchase_date else None,
             "subtotal": float(receipt.subtotal) if receipt.subtotal else None,
             "tax": float(receipt.tax) if receipt.tax else None,
@@ -330,8 +583,19 @@ class ReceiptService:
         result = client.table("receipts").insert(receipt_data).execute()
         receipt_id = result.data[0]["id"]
 
-        # Insert line items
+        # Insert line items with resolution tracking
         for i, item in enumerate(receipt.line_items):
+            # Serialize extracted codes as JSON
+            extracted_codes_json = [
+                {
+                    "code": code.code,
+                    "code_type": code.code_type.value,
+                    "confidence": code.confidence,
+                    "source_text": code.source_text,
+                }
+                for code in (item.extracted_codes or [])
+            ]
+
             item_data = {
                 "receipt_id": receipt_id,
                 "raw_text": item.raw_text,
@@ -341,6 +605,16 @@ class ReceiptService:
                 "total_price": float(item.total_price) if item.total_price else None,
                 "food_item_id": item.food_item_id,
                 "match_confidence": item.match_confidence,
+                # Resolution tracking fields
+                "resolution_status": item.resolution_status.value if item.resolution_status else "pending",
+                "resolution_method": item.resolution_method,
+                "extracted_codes": json.dumps(extracted_codes_json),
+                "scanned_barcode": item.scanned_barcode,
+                "off_product_name": item.off_product_name,
+                "off_brand": item.off_brand,
+                "off_barcode": item.off_barcode,
+                "needs_manual_entry": item.needs_manual_entry,
+                "manual_entry_hint": item.manual_entry_hint,
             }
             client.table("receipt_line_items").insert(item_data).execute()
 
