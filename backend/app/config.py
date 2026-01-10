@@ -44,11 +44,17 @@ class Settings(BaseSettings):
     data_dir: str = "./data"
     usda_cache_db: str = "./data/usda_cache.db"
 
+    # Google Document AI (Receipt OCR)
+    google_project_id: str | None = None
+    google_location: str = "us"
+    google_processor_id: str | None = None
+    google_credentials_json: str | None = None  # JSON string from Doppler
+
     # Feature Flags
     feature_barcode_lookup: bool = True
-    feature_receipt_ocr: bool = False  # Phase 2
-    feature_price_tracking: bool = False  # Phase 2
-    feature_expiration_dates: bool = False  # Phase 2
+    feature_receipt_ocr: bool = True  # Phase 2
+    feature_price_tracking: bool = True  # Phase 2
+    feature_expiration_dates: bool = True  # Phase 2
     feature_inventory_prediction: bool = False  # Phase 3
     feature_drinks_caffeine: bool = False  # Phase 3
 
@@ -59,6 +65,15 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
+
+    @property
+    def receipt_ocr_enabled(self) -> bool:
+        """Check if receipt OCR is properly configured."""
+        return (
+            self.feature_receipt_ocr
+            and self.google_project_id is not None
+            and self.google_processor_id is not None
+        )
 
 
 @lru_cache
