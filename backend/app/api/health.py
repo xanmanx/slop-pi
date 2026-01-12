@@ -6,6 +6,8 @@ from datetime import datetime
 
 from fastapi import APIRouter
 
+from app.services.healthcheck import get_health_checker, HealthStatus
+
 router = APIRouter()
 
 
@@ -68,3 +70,64 @@ async def detailed_health():
         },
         "temperature_c": temp,
     }
+
+
+@router.get("/health/services")
+async def services_health():
+    """
+    Comprehensive health check of all services.
+
+    Checks:
+    - API responsiveness
+    - Supabase database
+    - Barcode cache (SQLite)
+    - USDA cache (SQLite)
+    - Open Food Facts API
+    - Document AI (Google)
+    - Tesseract OCR
+    """
+    checker = get_health_checker()
+    report = await checker.run_all_checks()
+
+    return report.to_dict()
+
+
+@router.get("/health/ready")
+async def readiness_check():
+    """
+    Kubernetes-style readiness check.
+
+    Returns 200 if service is ready to receive traffic.
+    Returns 503 if critical services are down.
+    """
+    checker = get_health_checker()
+    report = await checker.run_all_checks()
+
+    # Check critical services
+    critical_services = ["api", "supabase"]
+    critical_healthy = all(
+        c.status == HealthStatus.HEALTHY
+        for c in report.checks
+        if c.name in critical_services
+    )
+
+    if critical_healthy:
+        return {"ready": True, "status": report.status.value}
+    else:
+        from fastapi import Response
+        return Response(
+            content='{"ready": false}',
+            status_code=503,
+            media_type="application/json"
+        )
+
+
+@router.get("/health/live")
+async def liveness_check():
+    """
+    Kubernetes-style liveness check.
+
+    Returns 200 if the process is alive.
+    This is a simple check - if we can respond, we're alive.
+    """
+    return {"live": True, "timestamp": datetime.utcnow().isoformat()}

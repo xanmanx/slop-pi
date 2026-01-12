@@ -51,7 +51,7 @@ class ProductCodeExtractor:
         (r"\b(\d{1,6}[-\s]\d{5,6})\b", ProductCodeType.UPC_A),
         # PLU codes: 4-5 digits, often prefixed with PLU or #
         (r"\bPLU[:\s#]*(\d{4,5})\b", ProductCodeType.PLU),
-        (r"\b#(\d{4,5})\b", ProductCodeType.PLU),
+        (r"(?<![0-9])#(\d{4,5})(?![0-9])", ProductCodeType.PLU),
         # UPC-E: 8 digits (compressed format)
         (r"\b(\d{8})\b", ProductCodeType.UPC_E),
     ]
