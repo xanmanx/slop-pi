@@ -114,13 +114,30 @@ class TestResolutionChainFlow:
         3. Open Food Facts lookup attempted
         4. Unmatched items queued for manual entry
         """
-        with patch('app.services.receipts.get_receipt_service') as mock_receipt_svc, \
-             patch('app.services.resolution.get_resolution_service') as mock_resolution_svc:
+        from datetime import date
+        from decimal import Decimal
+        from app.models.receipts import ParsedReceipt, StoreType, ReceiptScanResponse
 
-            # Mock receipt service
-            mock_receipt = MagicMock()
-            mock_receipt.line_items = []
-            mock_receipt_svc.return_value.scan_receipt = AsyncMock(return_value=MagicMock(
+        # Patch at the API module level where the service is imported
+        with patch('app.api.receipts.get_receipt_service') as mock_receipt_svc:
+            # Create a proper mock receipt with all required fields
+            mock_receipt = ParsedReceipt(
+                id="test-receipt-id",
+                user_id=test_user_id,
+                store_name="Test Store",
+                store_address="123 Test St",
+                store_type=StoreType.GROCERY,
+                purchase_date=date.today(),
+                subtotal=Decimal("50.00"),
+                tax=Decimal("5.00"),
+                total=Decimal("55.00"),
+                payment_method="card",
+                raw_text="test receipt text",
+                line_items=[],
+            )
+
+            # Create proper response object
+            mock_response = ReceiptScanResponse(
                 success=True,
                 receipt_id="test-receipt-id",
                 receipt=mock_receipt,
@@ -128,7 +145,10 @@ class TestResolutionChainFlow:
                 items_unmatched=2,
                 items_barcode_matched=1,
                 items_needs_manual=1,
-            ))
+                error=None,
+            )
+
+            mock_receipt_svc.return_value.scan_receipt = AsyncMock(return_value=mock_response)
             mock_receipt_svc.return_value.is_enabled = True
 
             # Test scan

@@ -68,7 +68,13 @@ def mock_supabase():
 @pytest.fixture
 def test_user_id():
     """Test user ID for database operations."""
-    return "test-user-00000000-0000-0000-0000-000000000000"
+    return "00000000-0000-0000-0000-000000000001"
+
+
+@pytest.fixture
+def nonexistent_uuid():
+    """A valid UUID format that doesn't exist in the database."""
+    return "00000000-0000-0000-0000-000000000000"
 
 
 # =============================================================================
