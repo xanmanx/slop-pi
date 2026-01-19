@@ -25,7 +25,8 @@ from app.api import grocery as grocery_api
 from app.api import planning as planning_api
 from app.api import batch_prep as batch_prep_api
 from app.api import barcode as barcode_api
-from app.api import receipts as receipts_api
+# DISABLED: Receipt OCR temporarily disabled while focusing on core features
+# from app.api import receipts as receipts_api
 from app.api import prices as prices_api
 from app.api import expiration as expiration_api
 from app.services.usda import USDAService
@@ -142,7 +143,8 @@ app.include_router(grocery_api.router)  # /api/grocery
 app.include_router(planning_api.router)  # /api/planning
 app.include_router(batch_prep_api.router)  # /api/batch-prep
 app.include_router(barcode_api.router)  # /api/barcode
-app.include_router(receipts_api.router)  # /api/receipts
+# DISABLED: Receipt OCR temporarily disabled while focusing on core features
+# app.include_router(receipts_api.router)  # /api/receipts
 app.include_router(prices_api.router)  # /api/prices
 app.include_router(expiration_api.router)  # /api/expiration
 
@@ -152,8 +154,8 @@ async def root():
     """Root endpoint."""
     return {
         "name": "slop-pi",
-        "version": "2.3.0",
-        "description": "Meal planning & nutrition API with barcode lookup, receipt OCR, and price tracking",
+        "version": "2.3.1",
+        "description": "Meal planning & nutrition API with barcode lookup and price tracking",
         "docs": "/docs",
         "endpoints": {
             "health": "/health",
@@ -165,7 +167,7 @@ async def root():
             "planning": "/api/planning",
             "batch-prep": "/api/batch-prep",
             "barcode": "/api/barcode",
-            "receipts": "/api/receipts",
+            # "receipts": "/api/receipts",  # Temporarily disabled
             "prices": "/api/prices",
             "expiration": "/api/expiration",
             "cron": "/api/cron",

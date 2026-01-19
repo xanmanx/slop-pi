@@ -290,7 +290,7 @@ async def process_scheduled_supplements() -> dict:
                 # Get active supplements for this user
                 result = (
                     client.table(TABLES["supplements"])
-                    .select("id, food_item_id, time_of_day, frequency, amount_g, serving_count")
+                    .select("id, food_item_id, time_of_day, schedule_type, schedule_config, amount_g, serving_count")
                     .eq("user_id", user_id)
                     .eq("is_active", True)
                     .execute()
@@ -361,23 +361,24 @@ async def process_scheduled_supplements() -> dict:
                             })
                             logger.info(f"Consumed supplement {supp_id[:8]}...")
 
-                            # Update inventory
-                            # First get current inventory
+                            # Update inventory (use limit(1) instead of single() to avoid
+                            # errors when no inventory exists for this item)
                             inv_result = (
                                 client.table(TABLES["inventory"])
                                 .select("id, quantity_g")
                                 .eq("user_id", user_id)
                                 .eq("food_item_id", food_item_id)
-                                .single()
+                                .limit(1)
                                 .execute()
                             )
 
-                            if inv_result.data:
-                                current_qty = inv_result.data.get("quantity_g", 0)
+                            if inv_result.data and len(inv_result.data) > 0:
+                                inv_item = inv_result.data[0]
+                                current_qty = inv_item.get("quantity_g", 0)
                                 new_qty = max(0, current_qty - total_amount)
                                 client.table(TABLES["inventory"]).update({
                                     "quantity_g": new_qty
-                                }).eq("id", inv_result.data["id"]).execute()
+                                }).eq("id", inv_item["id"]).execute()
 
                     except Exception as e:
                         errors.append({
