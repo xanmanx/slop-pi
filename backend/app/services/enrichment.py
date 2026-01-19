@@ -171,11 +171,20 @@ async def enrich_ingredient(ingredient_id: str, ingredient_name: str, usda_fdc_i
         return False
 
     # Update the ingredient
+    # First check if this FDC ID is already used by another food item
+    # to avoid unique constraint violation on idx_food_items_usda_fdc_id
     try:
-        client.table(TABLES["items"]).update({
-            "micronutrients": micros,
-            "usda_fdc_id": fdc_id
-        }).eq("id", ingredient_id).execute()
+        existing = client.table(TABLES["items"]).select("id").eq(
+            "usda_fdc_id", fdc_id
+        ).limit(1).execute()
+
+        update_data = {"micronutrients": micros}
+
+        # Only set usda_fdc_id if not already used by another item
+        if not existing.data or (len(existing.data) == 1 and existing.data[0]["id"] == ingredient_id):
+            update_data["usda_fdc_id"] = fdc_id
+
+        client.table(TABLES["items"]).update(update_data).eq("id", ingredient_id).execute()
         logger.info(f"Enriched '{ingredient_name}' with {len(micros)} micronutrients (matched: {food.get('description', 'unknown')})")
         return True
     except Exception as e:
