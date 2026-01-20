@@ -19,7 +19,7 @@ from app.models.grocery import (
     GroceryList,
     GroceryGenerationRequest,
 )
-from app.services.recipes import flatten_recipe, get_recipe_graph_context
+from app.services.recipes import flatten_recipe_auto_owner, get_recipe_graph_context
 from app.services.supabase import get_supabase_client, TABLES
 
 logger = logging.getLogger(__name__)
@@ -209,9 +209,9 @@ async def generate_grocery_list(request: GroceryGenerationRequest) -> GroceryLis
             needs[agg_key]["from_meals"] += grams
             needs[agg_key]["meal_sources"].add(item.get("name", "Unknown"))
         else:
-            # Recipe - flatten it
+            # Recipe - flatten it (auto-detect owner for cross-user support)
             try:
-                flattened = await flatten_recipe(
+                flattened = await flatten_recipe_auto_owner(
                     food_item_id, entry_user, scale,
                     include_micronutrients=False, include_rda=False
                 )
