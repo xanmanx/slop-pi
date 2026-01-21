@@ -30,6 +30,8 @@ from app.api import barcode as barcode_api
 from app.api import prices as prices_api
 from app.api import expiration as expiration_api
 from app.api import me as me_api
+from app.api import claude as claude_api
+from app.api import tokens as tokens_api
 from app.services.usda import USDAService
 from app.services.barcode import BarcodeService
 from app.jobs.scheduler import start_scheduler, shutdown_scheduler
@@ -105,10 +107,14 @@ async def verify_api_key(request: Request, call_next):
 
     # Also allow recipe endpoints (secured by user_id in payload)
     # /me endpoints have their own local-network check
+    # /claude endpoints use token-based auth
+    # /api/tokens is secured by user_id from frontend auth
     recipe_prefixes = [
         "/api/recipes/", "/api/nutrition/", "/api/grocery/", "/api/planning/",
         "/api/batch-prep/", "/api/barcode/", "/api/receipts/", "/api/prices/", "/api/expiration/",
-        "/me/"
+        "/api/tokens/",
+        "/me/",
+        "/claude/",
     ]
     if any(request.url.path.startswith(prefix) for prefix in recipe_prefixes):
         return await call_next(request)
@@ -151,6 +157,8 @@ app.include_router(barcode_api.router)  # /api/barcode
 app.include_router(prices_api.router)  # /api/prices
 app.include_router(expiration_api.router)  # /api/expiration
 app.include_router(me_api.router)  # /me (local network only)
+app.include_router(claude_api.router)  # /claude/{token}/ (AI assistant access)
+app.include_router(tokens_api.router)  # /api/tokens (token management)
 
 
 @app.get("/")
@@ -158,8 +166,8 @@ async def root():
     """Root endpoint."""
     return {
         "name": "slop-pi",
-        "version": "2.3.1",
-        "description": "Meal planning & nutrition API with barcode lookup and price tracking",
+        "version": "2.4.0",
+        "description": "Meal planning & nutrition API with AI assistant access",
         "docs": "/docs",
         "endpoints": {
             "health": "/health",
@@ -175,6 +183,8 @@ async def root():
             "prices": "/api/prices",
             "expiration": "/api/expiration",
             "cron": "/api/cron",
+            "tokens": "/api/tokens",
+            "claude": "/claude/{token}",
         },
     }
 
