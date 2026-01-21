@@ -19,6 +19,8 @@ dependencies = [
     # Phase 2: Receipt OCR & Price Tracking
     "google-cloud-documentai>=2.20.0",
     "scipy>=1.11.0",
+    # MCP Server
+    "mcp>=1.0.0",
 ]
 
 [project.optional-dependencies]
