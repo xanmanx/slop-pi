@@ -152,6 +152,7 @@ async def generate_grocery_list(request: GroceryGenerationRequest) -> GroceryLis
 
     items_result = client.table(TABLES["items"]).select("*").or_(access_filter).execute()
     item_map = {item["id"]: item for item in (items_result.data or [])}
+    logger.info(f"Loaded {len(item_map)} food items into item_map")
 
     # -------------------------------------------------------------------------
     # Load inventory
@@ -180,15 +181,22 @@ async def generate_grocery_list(request: GroceryGenerationRequest) -> GroceryLis
     if all_entries:
         await get_recipe_graph_context(user_id)
 
+    skipped_count = 0
+    processed_count = 0
+    flatten_errors = 0
+
     for entry in all_entries:
         food_item_id = entry["food_item_id"]
         item = item_map.get(food_item_id)
         if not item:
+            skipped_count += 1
+            logger.debug(f"Skipping entry {food_item_id[:8]}... - not in item_map")
             continue
 
         scale = float(entry.get("scale_factor") or 1)
         kind = item.get("kind", "ingredient")
         entry_user = entry.get("user_id", user_id)
+        processed_count += 1
 
         if kind in ("ingredient", "product"):
             # Direct item
@@ -217,6 +225,7 @@ async def generate_grocery_list(request: GroceryGenerationRequest) -> GroceryLis
                 )
 
                 meal_name = item.get("name", "Unknown")
+                logger.debug(f"Flattened '{meal_name}' -> {len(flattened.ingredients)} ingredients")
 
                 for ing in flattened.ingredients:
                     # Get actual item for aggregation key
@@ -247,7 +256,14 @@ async def generate_grocery_list(request: GroceryGenerationRequest) -> GroceryLis
                     needs[agg_key]["meal_sources"].add(meal_name)
 
             except Exception as e:
+                flatten_errors += 1
                 logger.warning(f"Failed to flatten recipe {food_item_id}: {e}")
+
+    logger.info(
+        f"Entry processing complete: {processed_count} processed, "
+        f"{skipped_count} skipped (not in item_map), {flatten_errors} flatten errors, "
+        f"{len(needs)} unique ingredients aggregated"
+    )
 
     # -------------------------------------------------------------------------
     # Add reorders
