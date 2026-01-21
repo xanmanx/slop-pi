@@ -3,6 +3,14 @@ Simple text endpoints for Claude mobile/web access.
 
 These endpoints return plain text summaries that Claude can easily read.
 Only accessible from local network (192.168.x.x).
+
+Endpoints:
+  /me/xander/today     - Xander's daily summary
+  /me/xander/inventory - Xander's inventory
+  /me/xander/add       - Add to Xander's inventory
+  /me/skiler/today     - Skiler's daily summary
+  /me/skiler/inventory - Skiler's inventory
+  /me/skiler/add       - Add to Skiler's inventory
 """
 
 from datetime import date, timedelta
@@ -15,15 +23,17 @@ from app.services.nutrition import compute_daily_nutrition
 
 router = APIRouter(prefix="/me", tags=["me"])
 
-# Hardcoded user ID for local access (your account)
-DEFAULT_USER_ID = "b7ddfbbd-58c0-4076-9406-58dd1930aee5"
+# User mappings
+USERS = {
+    "xander": "b7ddfbbd-58c0-4076-9406-58dd1930aee5",
+    "skiler": "5fc549ee-ce69-4539-b3d7-73b8637c21bc",
+}
 
 
 def check_local_network(request: Request):
     """Ensure request is from local network only."""
     client_ip = request.client.host if request.client else ""
 
-    # Allow local IPs: 192.168.x.x, 10.x.x.x, 172.16-31.x.x, localhost
     local_prefixes = ("192.168.", "10.", "172.16.", "172.17.", "172.18.",
                       "172.19.", "172.20.", "172.21.", "172.22.", "172.23.",
                       "172.24.", "172.25.", "172.26.", "172.27.", "172.28.",
@@ -33,20 +43,33 @@ def check_local_network(request: Request):
         raise HTTPException(status_code=403, detail="Local network access only")
 
 
-@router.get("/today", response_class=PlainTextResponse)
-async def today_summary(request: Request):
+def get_user_id(username: str) -> str:
+    """Get user ID from username."""
+    user_id = USERS.get(username.lower())
+    if not user_id:
+        raise HTTPException(status_code=404, detail=f"Unknown user: {username}")
+    return user_id
+
+
+# =============================================================================
+# TODAY - Daily summary
+# =============================================================================
+
+@router.get("/{username}/today", response_class=PlainTextResponse)
+async def today_summary(request: Request, username: str):
     """Get today's meal plan, nutrition, and expiring items."""
     check_local_network(request)
+    user_id = get_user_id(username)
 
     supabase = get_supabase()
     today = date.today().isoformat()
-    lines = [f"# Today ({today})", ""]
+    lines = [f"# {username.title()}'s Day ({today})", ""]
 
     # 1. Meal Plan
     result = (
         supabase.table("foodos2_plan_entries")
         .select("slot, scale_factor, foodos2_food_items(name, kind)")
-        .eq("user_id", DEFAULT_USER_ID)
+        .eq("user_id", user_id)
         .eq("planned_date", today)
         .order("slot")
         .execute()
@@ -69,9 +92,9 @@ async def today_summary(request: Request):
 
     # 2. Nutrition
     try:
-        graph_service = RecipeGraphService(DEFAULT_USER_ID)
+        graph_service = RecipeGraphService(user_id)
         nutrition = await compute_daily_nutrition(
-            DEFAULT_USER_ID, today, graph_service,
+            user_id, today, graph_service,
             include_supplements=True, include_planned=True
         )
 
@@ -98,7 +121,7 @@ async def today_summary(request: Request):
     result = (
         supabase.table("foodos2_inventory_items")
         .select("quantity_g, expiration_date, foodos2_food_items(name)")
-        .eq("user_id", DEFAULT_USER_ID)
+        .eq("user_id", user_id)
         .not_.is_("expiration_date", "null")
         .lte("expiration_date", (date.today() + timedelta(days=3)).isoformat())
         .order("expiration_date")
@@ -106,7 +129,7 @@ async def today_summary(request: Request):
     )
 
     if result.data:
-        lines.append("## Expiring Soon (3 days)")
+        lines.append("## Expiring Soon")
         for item in result.data:
             food = item.get("foodos2_food_items", {})
             name = food.get("name", "Unknown") if food else "Unknown"
@@ -121,80 +144,19 @@ async def today_summary(request: Request):
             else:
                 exp_str = f"{days_left}d"
             lines.append(f"- {name}: {qty:.0f}g ({exp_str})")
-        lines.append("")
 
     return "\n".join(lines)
 
 
-@router.get("/week", response_class=PlainTextResponse)
-async def week_summary(request: Request):
-    """Get this week's meal plan and grocery list summary."""
-    check_local_network(request)
+# =============================================================================
+# INVENTORY - View inventory
+# =============================================================================
 
-    supabase = get_supabase()
-    today = date.today()
-    week_end = today + timedelta(days=6)
-
-    lines = [f"# Week ({today.isoformat()} to {week_end.isoformat()})", ""]
-
-    # Meal Plan
-    result = (
-        supabase.table("foodos2_plan_entries")
-        .select("planned_date, slot, foodos2_food_items(name)")
-        .eq("user_id", DEFAULT_USER_ID)
-        .gte("planned_date", today.isoformat())
-        .lte("planned_date", week_end.isoformat())
-        .order("planned_date")
-        .order("slot")
-        .execute()
-    )
-
-    lines.append("## Meal Plan")
-    if result.data:
-        by_date = {}
-        for entry in result.data:
-            d = entry["planned_date"]
-            if d not in by_date:
-                by_date[d] = []
-            food = entry.get("foodos2_food_items", {})
-            name = food.get("name", "?") if food else "?"
-            by_date[d].append(f"{entry['slot'][0].upper()}: {name}")
-
-        for d in sorted(by_date.keys()):
-            day_name = date.fromisoformat(d).strftime("%a %m/%d")
-            meals = " | ".join(by_date[d])
-            lines.append(f"- {day_name}: {meals}")
-    else:
-        lines.append("- No meals planned")
-    lines.append("")
-
-    # Quick inventory summary
-    result = (
-        supabase.table("foodos2_inventory_items")
-        .select("quantity_g, foodos2_food_items(name)")
-        .eq("user_id", DEFAULT_USER_ID)
-        .gt("quantity_g", 0)
-        .execute()
-    )
-
-    lines.append(f"## Inventory ({len(result.data)} items)")
-    if result.data:
-        # Show top items by quantity
-        items = sorted(result.data, key=lambda x: x.get("quantity_g", 0), reverse=True)[:10]
-        for item in items:
-            food = item.get("foodos2_food_items", {})
-            name = food.get("name", "?") if food else "?"
-            qty = item.get("quantity_g", 0)
-            lines.append(f"- {name}: {qty:.0f}g")
-    lines.append("")
-
-    return "\n".join(lines)
-
-
-@router.get("/inventory", response_class=PlainTextResponse)
-async def inventory_summary(request: Request):
+@router.get("/{username}/inventory", response_class=PlainTextResponse)
+async def inventory_summary(request: Request, username: str):
     """Get current inventory."""
     check_local_network(request)
+    user_id = get_user_id(username)
 
     supabase = get_supabase()
     today = date.today()
@@ -202,13 +164,13 @@ async def inventory_summary(request: Request):
     result = (
         supabase.table("foodos2_inventory_items")
         .select("quantity_g, expiration_date, storage_type, foodos2_food_items(name)")
-        .eq("user_id", DEFAULT_USER_ID)
+        .eq("user_id", user_id)
         .gt("quantity_g", 0)
         .order("expiration_date")
         .execute()
     )
 
-    lines = [f"# Inventory ({len(result.data)} items)", ""]
+    lines = [f"# {username.title()}'s Inventory ({len(result.data)} items)", ""]
 
     if not result.data:
         lines.append("Empty")
@@ -248,17 +210,224 @@ async def inventory_summary(request: Request):
     return "\n".join(lines)
 
 
-@router.get("/recipes", response_class=PlainTextResponse)
-async def recipes_list(request: Request, q: str = ""):
+# =============================================================================
+# ADD - Add to inventory (GET for Claude mobile compatibility)
+# =============================================================================
+
+@router.get("/{username}/add", response_class=PlainTextResponse)
+async def add_to_inventory(
+    request: Request,
+    username: str,
+    item: str,
+    qty: float,
+    storage: str = "refrigerator",
+    expires: str | None = None,
+):
+    """
+    Add item to inventory.
+
+    Args:
+        item: Food item name (e.g., "ground beef", "eggs")
+        qty: Quantity in grams (use 454 for 1 lb, 600 for dozen eggs)
+        storage: refrigerator, freezer, or pantry
+        expires: Expiration date YYYY-MM-DD (optional)
+
+    Example: /me/xander/add?item=ground%20beef&qty=2724&storage=refrigerator
+    """
+    check_local_network(request)
+    user_id = get_user_id(username)
+
+    supabase = get_supabase()
+
+    # Find existing food item
+    result = (
+        supabase.table("foodos2_food_items")
+        .select("id, name")
+        .eq("user_id", user_id)
+        .ilike("name", f"%{item}%")
+        .limit(1)
+        .execute()
+    )
+
+    if result.data:
+        food_item_id = result.data[0]["id"]
+        food_name = result.data[0]["name"]
+    else:
+        # Create new ingredient
+        new_item = {
+            "user_id": user_id,
+            "name": item,
+            "kind": "ingredient",
+            "calories_per_100g": 0,
+            "protein_g_per_100g": 0,
+            "carbs_g_per_100g": 0,
+            "fat_g_per_100g": 0,
+        }
+        result = supabase.table("foodos2_food_items").insert(new_item).execute()
+        food_item_id = result.data[0]["id"]
+        food_name = item
+
+    # Add to inventory
+    inventory_item = {
+        "user_id": user_id,
+        "food_item_id": food_item_id,
+        "quantity_g": qty,
+        "date_added": date.today().isoformat(),
+        "storage_type": storage,
+    }
+    if expires:
+        inventory_item["expiration_date"] = expires
+
+    supabase.table("foodos2_inventory_items").insert(inventory_item).execute()
+
+    # Format response
+    qty_lbs = qty / 454
+    exp_str = f", expires {expires}" if expires else ""
+
+    return f"Added {qty:.0f}g ({qty_lbs:.1f} lbs) of {food_name} to {username}'s {storage}{exp_str}"
+
+
+# =============================================================================
+# USE - Subtract from inventory
+# =============================================================================
+
+@router.get("/{username}/use", response_class=PlainTextResponse)
+async def use_from_inventory(
+    request: Request,
+    username: str,
+    item: str,
+    qty: float,
+):
+    """
+    Subtract quantity from inventory item.
+
+    Args:
+        item: Food item name
+        qty: Quantity in grams to subtract
+
+    Example: /me/xander/use?item=ground%20beef&qty=454
+    """
+    check_local_network(request)
+    user_id = get_user_id(username)
+
+    supabase = get_supabase()
+
+    # Find inventory item
+    result = (
+        supabase.table("foodos2_inventory_items")
+        .select("id, quantity_g, foodos2_food_items(name)")
+        .eq("user_id", user_id)
+        .execute()
+    )
+
+    matching = None
+    for inv_item in result.data:
+        food = inv_item.get("foodos2_food_items", {})
+        name = food.get("name", "") if food else ""
+        if item.lower() in name.lower():
+            matching = inv_item
+            break
+
+    if not matching:
+        return f"Could not find '{item}' in {username}'s inventory"
+
+    old_qty = float(matching["quantity_g"])
+    new_qty = max(0, old_qty - qty)
+
+    supabase.table("foodos2_inventory_items").update(
+        {"quantity_g": new_qty}
+    ).eq("id", matching["id"]).execute()
+
+    food_name = matching.get("foodos2_food_items", {}).get("name", item)
+    return f"Used {qty:.0f}g of {food_name}. Remaining: {new_qty:.0f}g"
+
+
+# =============================================================================
+# PLAN - Add meal to plan
+# =============================================================================
+
+@router.get("/{username}/plan", response_class=PlainTextResponse)
+async def add_to_plan(
+    request: Request,
+    username: str,
+    meal: str,
+    slot: str = "dinner",
+    day: str | None = None,
+):
+    """
+    Add meal to plan.
+
+    Args:
+        meal: Meal name to search for
+        slot: breakfast, lunch, dinner, or snack
+        day: Date YYYY-MM-DD (defaults to today)
+
+    Example: /me/xander/plan?meal=chicken%20pasta&slot=dinner
+    """
+    check_local_network(request)
+    user_id = get_user_id(username)
+
+    supabase = get_supabase()
+    planned_date = day or date.today().isoformat()
+
+    # Find meal
+    result = (
+        supabase.table("foodos2_food_items")
+        .select("id, name, kind")
+        .eq("user_id", user_id)
+        .ilike("name", f"%{meal}%")
+        .in_("kind", ["meal", "snack"])
+        .limit(1)
+        .execute()
+    )
+
+    if not result.data:
+        # Try any food item
+        result = (
+            supabase.table("foodos2_food_items")
+            .select("id, name, kind")
+            .eq("user_id", user_id)
+            .ilike("name", f"%{meal}%")
+            .limit(1)
+            .execute()
+        )
+
+    if not result.data:
+        return f"Could not find '{meal}' in {username}'s food library"
+
+    food_item = result.data[0]
+
+    # Add to plan
+    entry = {
+        "user_id": user_id,
+        "food_item_id": food_item["id"],
+        "planned_date": planned_date,
+        "slot": slot.lower(),
+        "scale_factor": 1.0,
+        "is_batch_prepped": False,
+        "is_logged": False,
+    }
+    supabase.table("foodos2_plan_entries").insert(entry).execute()
+
+    return f"Added {food_item['name']} to {username}'s {slot} on {planned_date}"
+
+
+# =============================================================================
+# SEARCH - Search recipes
+# =============================================================================
+
+@router.get("/{username}/recipes", response_class=PlainTextResponse)
+async def search_recipes(request: Request, username: str, q: str = ""):
     """Search recipes or list recent ones."""
     check_local_network(request)
+    user_id = get_user_id(username)
 
     supabase = get_supabase()
 
     query = (
         supabase.table("foodos2_food_items")
         .select("name, kind, calories_per_100g, protein_g_per_100g")
-        .eq("user_id", DEFAULT_USER_ID)
+        .eq("user_id", user_id)
         .in_("kind", ["meal", "snack"])
         .limit(20)
     )
@@ -268,14 +437,17 @@ async def recipes_list(request: Request, q: str = ""):
 
     result = query.execute()
 
-    lines = [f"# Recipes" + (f" matching '{q}'" if q else ""), ""]
+    title = f"# {username.title()}'s Recipes"
+    if q:
+        title += f" matching '{q}'"
+    lines = [title, ""]
 
     if result.data:
         for item in result.data:
             name = item["name"]
             cal = item.get("calories_per_100g") or 0
             protein = item.get("protein_g_per_100g") or 0
-            lines.append(f"- {name} ({cal:.0f} cal, {protein:.0f}g protein per 100g)")
+            lines.append(f"- {name} ({cal:.0f} cal, {protein:.0f}g protein)")
     else:
         lines.append("No recipes found")
 
