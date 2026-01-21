@@ -17,9 +17,8 @@ from datetime import date, timedelta
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import PlainTextResponse
 
-from app.services.supabase import get_supabase
-from app.services.recipe_graph import RecipeGraphService
-from app.services.nutrition import compute_daily_nutrition
+from app.services.supabase import get_supabase_client as get_supabase
+from app.services.nutrition import get_nutrition_service
 
 router = APIRouter(prefix="/me", tags=["me"])
 
@@ -62,15 +61,16 @@ async def today_summary(request: Request, username: str):
     user_id = get_user_id(username)
 
     supabase = get_supabase()
-    today = date.today().isoformat()
-    lines = [f"# {username.title()}'s Day ({today})", ""]
+    today = date.today()
+    today_str = today.isoformat()
+    lines = [f"# {username.title()}'s Day ({today_str})", ""]
 
     # 1. Meal Plan
     result = (
         supabase.table("foodos2_plan_entries")
         .select("slot, scale_factor, foodos2_food_items(name, kind)")
         .eq("user_id", user_id)
-        .eq("planned_date", today)
+        .eq("planned_date", today_str)
         .order("slot")
         .execute()
     )
@@ -92,26 +92,17 @@ async def today_summary(request: Request, username: str):
 
     # 2. Nutrition
     try:
-        graph_service = RecipeGraphService(user_id)
-        nutrition = await compute_daily_nutrition(
-            user_id, today, graph_service,
-            include_supplements=True, include_planned=True
-        )
-
-        n = nutrition.get("nutrition", {})
-        target = nutrition.get("target_calories", 0)
-        actual = n.get("calories", 0)
+        svc = get_nutrition_service()
+        stats = await svc.get_daily_stats(user_id, today, include_supplements=True, include_planned=True)
 
         lines.append("## Nutrition")
-        lines.append(f"- Calories: {actual:.0f} / {target:.0f} kcal")
-        lines.append(f"- Protein: {n.get('protein_g', 0):.0f}g")
-        lines.append(f"- Carbs: {n.get('carbs_g', 0):.0f}g")
-        lines.append(f"- Fat: {n.get('fat_g', 0):.0f}g")
+        lines.append(f"- Calories: {stats.nutrition.macros.calories:.0f} / {stats.target_calories:.0f} kcal")
+        lines.append(f"- Protein: {stats.nutrition.macros.protein_g:.0f}g")
+        lines.append(f"- Carbs: {stats.nutrition.macros.carbs_g:.0f}g")
+        lines.append(f"- Fat: {stats.nutrition.macros.fat_g:.0f}g")
 
-        v_score = nutrition.get("vitamin_score")
-        m_score = nutrition.get("mineral_score")
-        if v_score is not None:
-            lines.append(f"- Vitamins: {v_score:.0f}% | Minerals: {m_score:.0f}%")
+        if stats.vitamin_score is not None:
+            lines.append(f"- Vitamins: {stats.vitamin_score:.0f}% | Minerals: {stats.mineral_score:.0f}%")
     except Exception as e:
         lines.append("## Nutrition")
         lines.append(f"- Error loading: {e}")

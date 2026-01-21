@@ -25,9 +25,8 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
-from app.services.supabase import get_supabase
-from app.services.recipe_graph import RecipeGraphService
-from app.services.nutrition import compute_daily_nutrition
+from app.services.supabase import get_supabase_client as get_supabase
+from app.services.nutrition import get_nutrition_service
 
 router = APIRouter(prefix="/claude", tags=["claude"])
 
@@ -215,28 +214,19 @@ async def today_summary(token: str):
 
     # 2. Full Nutrition (computed)
     try:
-        graph_service = RecipeGraphService(user_id)
-        nutrition = await compute_daily_nutrition(
-            user_id, today_str, graph_service,
-            include_supplements=True, include_planned=True
-        )
-
-        n = nutrition.get("nutrition", {})
-        target = nutrition.get("target_calories", 2000)
-        actual = n.get("calories", 0)
+        svc = get_nutrition_service()
+        stats = await svc.get_daily_stats(user_id, today, include_supplements=True, include_planned=True)
 
         lines.append("## Nutrition Summary")
-        pct = (actual / target * 100) if target > 0 else 0
-        lines.append(f"- Calories: {actual:.0f} / {target:.0f} ({pct:.0f}%)")
-        lines.append(f"- Protein: {n.get('protein_g', 0):.0f}g")
-        lines.append(f"- Carbs: {n.get('carbs_g', 0):.0f}g")
-        lines.append(f"- Fat: {n.get('fat_g', 0):.0f}g")
-        lines.append(f"- Fiber: {n.get('fiber_g', 0):.0f}g")
+        pct = (stats.nutrition.macros.calories / stats.target_calories * 100) if stats.target_calories > 0 else 0
+        lines.append(f"- Calories: {stats.nutrition.macros.calories:.0f} / {stats.target_calories:.0f} ({pct:.0f}%)")
+        lines.append(f"- Protein: {stats.nutrition.macros.protein_g:.0f}g")
+        lines.append(f"- Carbs: {stats.nutrition.macros.carbs_g:.0f}g")
+        lines.append(f"- Fat: {stats.nutrition.macros.fat_g:.0f}g")
+        lines.append(f"- Fiber: {stats.nutrition.macros.fiber_g:.0f}g")
 
-        v_score = nutrition.get("vitamin_score")
-        m_score = nutrition.get("mineral_score")
-        if v_score is not None:
-            lines.append(f"- Micronutrients: {v_score:.0f}% vitamins, {m_score:.0f}% minerals")
+        if stats.vitamin_score is not None:
+            lines.append(f"- Micronutrients: {stats.vitamin_score:.0f}% vitamins, {stats.mineral_score:.0f}% minerals")
     except Exception as e:
         lines.append("## Nutrition Summary")
         lines.append(f"- Could not compute: {e}")
@@ -357,66 +347,62 @@ async def get_nutrition(
     user = await get_user_from_token(token)
     user_id = user["user_id"]
 
-    target_date = day or date.today().isoformat()
+    target_date_str = day or date.today().isoformat()
+    target_date = date.fromisoformat(target_date_str)
 
     try:
-        graph_service = RecipeGraphService(user_id)
-        nutrition = await compute_daily_nutrition(
-            user_id, target_date, graph_service,
+        svc = get_nutrition_service()
+        stats = await svc.get_daily_stats(
+            user_id, target_date,
             include_supplements=True, include_planned=True
         )
     except Exception as e:
         return f"Error computing nutrition: {e}"
 
-    n = nutrition.get("nutrition", {})
-    target = nutrition.get("target_calories", 2000)
+    macros = stats.nutrition.macros
+    target = stats.target_calories or 2000
 
-    lines = [f"# Nutrition for {target_date}", ""]
+    lines = [f"# Nutrition for {target_date_str}", ""]
 
     # Macros
     lines.append("## Macros")
-    cal = n.get("calories", 0)
-    pct = (cal / target * 100) if target > 0 else 0
-    lines.append(f"- Calories: {cal:.0f} / {target:.0f} kcal ({pct:.0f}%)")
-    lines.append(f"- Protein: {n.get('protein_g', 0):.1f}g")
-    lines.append(f"- Carbohydrates: {n.get('carbs_g', 0):.1f}g")
-    lines.append(f"- Fat: {n.get('fat_g', 0):.1f}g")
-    lines.append(f"- Fiber: {n.get('fiber_g', 0):.1f}g")
-    lines.append(f"- Sugar: {n.get('sugar_g', 0):.1f}g")
-    lines.append(f"- Sodium: {n.get('sodium_mg', 0):.0f}mg")
+    pct = (macros.calories / target * 100) if target > 0 else 0
+    lines.append(f"- Calories: {macros.calories:.0f} / {target:.0f} kcal ({pct:.0f}%)")
+    lines.append(f"- Protein: {macros.protein_g:.1f}g")
+    lines.append(f"- Carbohydrates: {macros.carbs_g:.1f}g")
+    lines.append(f"- Fat: {macros.fat_g:.1f}g")
+    lines.append(f"- Fiber: {macros.fiber_g:.1f}g")
+    lines.append(f"- Sugar: {macros.sugar_g:.1f}g")
+    lines.append(f"- Sodium: {macros.sodium_mg:.0f}mg")
     lines.append("")
 
     # Micronutrient scores
-    v_score = nutrition.get("vitamin_score")
-    m_score = nutrition.get("mineral_score")
-    if v_score is not None:
+    if stats.vitamin_score is not None:
         lines.append("## Micronutrient Coverage")
-        lines.append(f"- Vitamin Score: {v_score:.0f}% of RDA")
-        lines.append(f"- Mineral Score: {m_score:.0f}% of RDA")
+        lines.append(f"- Vitamin Score: {stats.vitamin_score:.0f}% of RDA")
+        lines.append(f"- Mineral Score: {stats.mineral_score:.0f}% of RDA")
         lines.append("")
 
-    # Detailed vitamins
-    vitamins = nutrition.get("vitamins", {})
-    if vitamins:
-        lines.append("## Vitamins (amount / RDA%)")
-        for name, data in sorted(vitamins.items()):
-            if isinstance(data, dict):
-                amt = data.get("amount", 0)
-                pct = data.get("rda_pct", 0)
-                unit = data.get("unit", "")
-                lines.append(f"- {name}: {amt:.1f}{unit} ({pct:.0f}%)")
-        lines.append("")
+    # Detailed micronutrients from the list
+    micronutrients = stats.nutrition.micronutrients
+    if micronutrients:
+        # Separate vitamins and minerals
+        from app.models.nutrition import NutrientCategory
+        vitamins = [m for m in micronutrients if m.category == NutrientCategory.VITAMIN]
+        minerals = [m for m in micronutrients if m.category == NutrientCategory.MINERAL]
 
-    # Detailed minerals
-    minerals = nutrition.get("minerals", {})
-    if minerals:
-        lines.append("## Minerals (amount / RDA%)")
-        for name, data in sorted(minerals.items()):
-            if isinstance(data, dict):
-                amt = data.get("amount", 0)
-                pct = data.get("rda_pct", 0)
-                unit = data.get("unit", "")
-                lines.append(f"- {name}: {amt:.1f}{unit} ({pct:.0f}%)")
+        if vitamins:
+            lines.append("## Vitamins (amount / RDA%)")
+            for micro in sorted(vitamins, key=lambda x: x.name):
+                pct_str = f" ({micro.percent_rda:.0f}%)" if micro.percent_rda is not None else ""
+                lines.append(f"- {micro.name}: {micro.amount:.1f}{micro.unit}{pct_str}")
+            lines.append("")
+
+        if minerals:
+            lines.append("## Minerals (amount / RDA%)")
+            for micro in sorted(minerals, key=lambda x: x.name):
+                pct_str = f" ({micro.percent_rda:.0f}%)" if micro.percent_rda is not None else ""
+                lines.append(f"- {micro.name}: {micro.amount:.1f}{micro.unit}{pct_str}")
 
     return "\n".join(lines)
 

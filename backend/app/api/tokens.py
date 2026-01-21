@@ -12,7 +12,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
-from app.services.supabase import get_supabase
+from app.services.supabase import get_supabase_client as get_supabase
 from app.api.deps import get_current_user_id
 
 router = APIRouter(prefix="/api/tokens", tags=["tokens"])
