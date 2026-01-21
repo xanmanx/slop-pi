@@ -54,10 +54,24 @@ async def debug_grocery(
     ).execute()
     entries = entries_result.data or []
 
-    # Build item_map
+    # Build item_map - first load items by ID from plan entries
+    needed_ids = list(set(e["food_item_id"] for e in entries))
+    item_map = {}
+
+    # Load plan items directly by ID
+    if needed_ids:
+        for i in range(0, len(needed_ids), 100):
+            batch = needed_ids[i:i+100]
+            batch_result = client.table(TABLES["items"]).select("id,name,kind,user_id,is_public").in_("id", batch).execute()
+            for item in (batch_result.data or []):
+                item_map[item["id"]] = item
+
+    # Also load user's items with higher limit
     access_filter = f"user_id.eq.{user_id},user_id.is.null,is_public.eq.true"
-    items_result = client.table(TABLES["items"]).select("id,name,kind,user_id,is_public").or_(access_filter).execute()
-    item_map = {item["id"]: item for item in (items_result.data or [])}
+    items_result = client.table(TABLES["items"]).select("id,name,kind,user_id,is_public").or_(access_filter).limit(5000).execute()
+    for item in (items_result.data or []):
+        if item["id"] not in item_map:
+            item_map[item["id"]] = item
 
     # Track processing
     debug_entries = []

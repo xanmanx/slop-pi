@@ -144,15 +144,38 @@ async def generate_grocery_list(request: GroceryGenerationRequest) -> GroceryLis
     # Load food items
     # -------------------------------------------------------------------------
 
-    # Build access filter for all users
+    # First, collect all food_item_ids we need from plan entries
+    needed_item_ids = set()
+    for entry in all_entries:
+        needed_item_ids.add(entry["food_item_id"])
+
+    # Load items in batches by ID (most efficient - only get what we need)
+    item_map: dict[str, dict] = {}
+
+    if needed_item_ids:
+        # Supabase has a limit on IN clause, batch if needed
+        id_list = list(needed_item_ids)
+        batch_size = 100
+        for i in range(0, len(id_list), batch_size):
+            batch_ids = id_list[i:i + batch_size]
+            batch_result = client.table(TABLES["items"]).select("*").in_("id", batch_ids).execute()
+            for item in (batch_result.data or []):
+                item_map[item["id"]] = item
+
+    # Also load user's own items and public items for recipe flattening
+    # (ingredients referenced by recipes may not be in the plan directly)
     access_filters = [f"user_id.eq.{uid}" for uid in user_ids]
     access_filters.append("user_id.is.null")
     access_filters.append("is_public.eq.true")
     access_filter = ",".join(access_filters)
 
-    items_result = client.table(TABLES["items"]).select("*").or_(access_filter).execute()
-    item_map = {item["id"]: item for item in (items_result.data or [])}
-    logger.info(f"Loaded {len(item_map)} food items into item_map")
+    # Use limit to get more items (default is 1000)
+    items_result = client.table(TABLES["items"]).select("*").or_(access_filter).limit(5000).execute()
+    for item in (items_result.data or []):
+        if item["id"] not in item_map:
+            item_map[item["id"]] = item
+
+    logger.info(f"Loaded {len(item_map)} food items into item_map ({len(needed_item_ids)} from plan)")
 
     # -------------------------------------------------------------------------
     # Load inventory
