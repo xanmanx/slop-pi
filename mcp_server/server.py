@@ -832,11 +832,10 @@ async def add_to_inventory(
                 "user_id": uid,
                 "name": food_item_name,
                 "kind": "ingredient",
-                "serving_g": 100,
-                "calories": 0,
-                "protein_g": 0,
-                "carbs_g": 0,
-                "fat_g": 0,
+                "calories_per_100g": 0,
+                "protein_g_per_100g": 0,
+                "carbs_g_per_100g": 0,
+                "fat_g_per_100g": 0,
             }
             result = supabase.table("foodos2_food_items").insert(new_item).execute()
             food_item_id = result.data[0]["id"]

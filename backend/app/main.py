@@ -29,6 +29,7 @@ from app.api import barcode as barcode_api
 # from app.api import receipts as receipts_api
 from app.api import prices as prices_api
 from app.api import expiration as expiration_api
+from app.api import me as me_api
 from app.services.usda import USDAService
 from app.services.barcode import BarcodeService
 from app.jobs.scheduler import start_scheduler, shutdown_scheduler
@@ -103,9 +104,11 @@ async def verify_api_key(request: Request, call_next):
     public_paths = ["/", "/health", "/health/detailed", "/docs", "/openapi.json", "/redoc"]
 
     # Also allow recipe endpoints (secured by user_id in payload)
+    # /me endpoints have their own local-network check
     recipe_prefixes = [
         "/api/recipes/", "/api/nutrition/", "/api/grocery/", "/api/planning/",
-        "/api/batch-prep/", "/api/barcode/", "/api/receipts/", "/api/prices/", "/api/expiration/"
+        "/api/batch-prep/", "/api/barcode/", "/api/receipts/", "/api/prices/", "/api/expiration/",
+        "/me/"
     ]
     if any(request.url.path.startswith(prefix) for prefix in recipe_prefixes):
         return await call_next(request)
@@ -147,6 +150,7 @@ app.include_router(barcode_api.router)  # /api/barcode
 # app.include_router(receipts_api.router)  # /api/receipts
 app.include_router(prices_api.router)  # /api/prices
 app.include_router(expiration_api.router)  # /api/expiration
+app.include_router(me_api.router)  # /me (local network only)
 
 
 @app.get("/")
