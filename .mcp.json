@@ -1,15 +1,8 @@
 {
   "mcpServers": {
     "slop": {
-      "command": "python",
-      "args": ["-m", "mcp_server.server"],
-      "env": {
-        "SLOP_PI_URL": "https://api.slxp.app",
-        "SLOP_API_KEY": "${SLOP_API_KEY}",
-        "SUPABASE_URL": "${SUPABASE_URL}",
-        "SUPABASE_KEY": "${SUPABASE_SERVICE_ROLE_KEY}",
-        "SLOP_DEFAULT_USER_ID": "${SLOP_DEFAULT_USER_ID}"
-      }
+      "command": "bash",
+      "args": ["mcp_server/run.sh"]
     }
   }
 }
