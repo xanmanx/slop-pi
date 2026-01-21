@@ -333,6 +333,12 @@ GET {api_base}/claude/{token}/recipes?q=chicken
 GET {api_base}/claude/{token}/recipe?name=chicken+stir+fry
 ```
 
+### Create Recipe with AI
+```
+GET {api_base}/claude/{token}/create?prompt=high+protein+chicken+stir+fry&mode=healthy
+```
+- mode: lazy (quick/easy), fancy (restaurant-quality), healthy (nutrient-dense)
+
 ### View Nutrition Details
 ```
 GET {api_base}/claude/{token}/nutrition?day=2024-01-20
@@ -368,6 +374,7 @@ Mark Bought: {api_base}/claude/{token}/bought?days=7
 Add to Plan: {api_base}/claude/{token}/plan?meal=NAME&slot=dinner&day=YYYY-MM-DD
 Search Recipes: {api_base}/claude/{token}/recipes?q=QUERY
 Recipe Details: {api_base}/claude/{token}/recipe?name=NAME
+Create Recipe: {api_base}/claude/{token}/create?prompt=DESCRIPTION&mode=healthy
 Nutrition: {api_base}/claude/{token}/nutrition?day=YYYY-MM-DD
 
 NOTES:

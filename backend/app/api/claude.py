@@ -150,6 +150,10 @@ GET /claude/{{token}}/recipes?q=chicken
 GET /claude/{{token}}/recipe?name=chicken+stir+fry
   - Get full recipe details with ingredients
 
+GET /claude/{{token}}/create?prompt=high+protein+chicken+stir+fry&mode=healthy
+  - Generate new recipe with AI and save to library
+  - Modes: lazy (quick/easy), fancy (restaurant-quality), healthy (nutrient-dense)
+
 ## Tips
 - All quantities are in grams (454g = 1lb, 28g = 1oz)
 - Dates use YYYY-MM-DD format
@@ -1065,3 +1069,154 @@ async def get_recipe(
             lines.append(f"{i}. {step}")
 
     return "\n".join(lines)
+
+
+# =============================================================================
+# CREATE - AI recipe generation
+# =============================================================================
+
+@router.get("/{token}/create", response_class=PlainTextResponse)
+async def create_recipe(
+    token: str,
+    prompt: str = Query(..., description="Recipe description (e.g., 'high protein chicken stir fry')"),
+    mode: Optional[str] = Query(None, description="Mode: lazy, fancy, or healthy"),
+):
+    """
+    Generate a new recipe using AI and save it to your library.
+
+    Modes:
+    - lazy: Quick, minimal prep, few ingredients
+    - fancy: Restaurant-quality, proper techniques
+    - healthy: Nutrient-dense, whole foods
+    """
+    user = await get_user_from_token(token)
+    user_id = user["user_id"]
+
+    from app.services.ai import get_ai_service
+
+    supabase = get_supabase()
+    ai = get_ai_service()
+
+    try:
+        # Generate recipe with AI
+        recipe_data = await ai.generate_recipe(prompt, ai_mode=mode)
+
+        # Calculate totals from ingredients
+        total_calories = 0
+        total_protein = 0
+        total_carbs = 0
+        total_fat = 0
+        total_grams = 0
+
+        ingredients = recipe_data.get("ingredients", [])
+        for ing in ingredients:
+            amt = ing.get("amount_g", 0)
+            total_grams += amt
+            total_calories += (ing.get("calories_per_100g", 0) * amt / 100)
+            total_protein += (ing.get("protein_g_per_100g", 0) * amt / 100)
+            total_carbs += (ing.get("carbs_g_per_100g", 0) * amt / 100)
+            total_fat += (ing.get("fat_g_per_100g", 0) * amt / 100)
+
+        # Normalize to per 100g
+        if total_grams > 0:
+            cal_per_100 = total_calories * 100 / total_grams
+            protein_per_100 = total_protein * 100 / total_grams
+            carbs_per_100 = total_carbs * 100 / total_grams
+            fat_per_100 = total_fat * 100 / total_grams
+        else:
+            cal_per_100 = protein_per_100 = carbs_per_100 = fat_per_100 = 0
+
+        # Save main recipe as food item
+        food_item = {
+            "user_id": user_id,
+            "name": recipe_data.get("name", "New Recipe"),
+            "kind": "meal",
+            "description": recipe_data.get("description", ""),
+            "calories_per_100g": cal_per_100,
+            "protein_g_per_100g": protein_per_100,
+            "carbs_g_per_100g": carbs_per_100,
+            "fat_g_per_100g": fat_per_100,
+            "default_serving_g": total_grams,
+            "prep_steps": recipe_data.get("prep_steps", []),
+        }
+
+        result = supabase.table("foodos2_food_items").insert(food_item).execute()
+        recipe_id = result.data[0]["id"]
+
+        # Create ingredient items and recipe edges
+        for ing in ingredients:
+            ing_name = ing.get("name", "Unknown")
+
+            # Check if ingredient exists
+            existing = (
+                supabase.table("foodos2_food_items")
+                .select("id")
+                .eq("user_id", user_id)
+                .ilike("name", ing_name)
+                .limit(1)
+                .execute()
+            )
+
+            if existing.data:
+                ing_id = existing.data[0]["id"]
+            else:
+                # Create new ingredient
+                new_ing = {
+                    "user_id": user_id,
+                    "name": ing_name,
+                    "kind": "ingredient",
+                    "calories_per_100g": ing.get("calories_per_100g", 0),
+                    "protein_g_per_100g": ing.get("protein_g_per_100g", 0),
+                    "carbs_g_per_100g": ing.get("carbs_g_per_100g", 0),
+                    "fat_g_per_100g": ing.get("fat_g_per_100g", 0),
+                }
+                ing_result = supabase.table("foodos2_food_items").insert(new_ing).execute()
+                ing_id = ing_result.data[0]["id"]
+
+            # Create recipe edge
+            edge = {
+                "parent_id": recipe_id,
+                "child_id": ing_id,
+                "quantity_g": ing.get("amount_g", 0),
+            }
+            supabase.table("foodos2_recipe_edges").insert(edge).execute()
+
+        # Format response
+        lines = [f"# Created: {recipe_data.get('name', 'New Recipe')}", ""]
+
+        if recipe_data.get("description"):
+            lines.append(recipe_data["description"])
+            lines.append("")
+
+        lines.append("## Nutrition (per serving)")
+        lines.append(f"- Calories: {total_calories:.0f}")
+        lines.append(f"- Protein: {total_protein:.1f}g")
+        lines.append(f"- Carbs: {total_carbs:.1f}g")
+        lines.append(f"- Fat: {total_fat:.1f}g")
+        lines.append(f"- Serving size: {total_grams:.0f}g")
+        lines.append("")
+
+        lines.append("## Ingredients")
+        for ing in ingredients:
+            lines.append(f"- {ing.get('name', '?')}: {format_quantity(ing.get('amount_g', 0))}")
+        lines.append("")
+
+        prep_steps = recipe_data.get("prep_steps", [])
+        if prep_steps:
+            lines.append("## Instructions")
+            for i, step in enumerate(prep_steps, 1):
+                lines.append(f"{i}. {step}")
+            lines.append("")
+
+        prep_time = recipe_data.get("prep_time_minutes")
+        cook_time = recipe_data.get("cook_time_minutes")
+        if prep_time or cook_time:
+            lines.append(f"Prep: {prep_time or 0}min | Cook: {cook_time or 0}min")
+
+        lines.append("")
+        lines.append("Recipe saved to your library!")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"Error creating recipe: {e}"
