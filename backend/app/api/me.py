@@ -413,6 +413,239 @@ async def add_to_plan(
 
 
 # =============================================================================
+# GROCERY - Get grocery list
+# =============================================================================
+
+@router.get("/{username}/grocery", response_class=PlainTextResponse)
+async def get_grocery_list(
+    request: Request,
+    username: str,
+    days: int = 7,
+):
+    """
+    Get grocery list for upcoming days.
+
+    Args:
+        days: Number of days to plan for (default 7)
+
+    Example: /me/xander/grocery?days=7
+    """
+    check_local_network(request)
+    user_id = get_user_id(username)
+
+    from app.models.grocery import GroceryGenerationRequest
+    from app.services.grocery import generate_grocery_list
+
+    today = date.today()
+    end = today + timedelta(days=days - 1)
+
+    try:
+        request_obj = GroceryGenerationRequest(
+            user_id=user_id,
+            start_date=today,
+            end_date=end,
+            include_meals=True,
+            include_reorders=False,
+            include_supplements=False,
+            subtract_inventory=True,
+            group_by_category=True,
+            group_similar_items=True,
+        )
+        grocery_list = await generate_grocery_list(request_obj)
+
+        lines = [f"# {username.title()}'s Grocery List", ""]
+        lines.append(f"{today.isoformat()} to {end.isoformat()} ({days} days)")
+        lines.append(f"{grocery_list.items_to_buy_count} items needed")
+        lines.append("")
+
+        if not grocery_list.items:
+            lines.append("Nothing to buy!")
+            return "\n".join(lines)
+
+        # Group by category
+        by_category = grocery_list.by_category or {}
+        if by_category:
+            for category, items in sorted(by_category.items()):
+                lines.append(f"## {category}")
+                for item in items:
+                    name = item.get("name") or item.get("ingredient_name", "?")
+                    to_buy = item.get("to_buy_g", 0)
+                    if to_buy > 0:
+                        # Convert to friendly units
+                        if to_buy >= 454:
+                            amt = f"{to_buy/454:.1f} lbs"
+                        else:
+                            amt = f"{to_buy:.0f}g"
+                        lines.append(f"- [ ] {name}: {amt}")
+                lines.append("")
+        else:
+            # Flat list
+            for item in grocery_list.items:
+                if item.to_buy_g > 0:
+                    name = item.name
+                    to_buy = item.to_buy_g
+                    if to_buy >= 454:
+                        amt = f"{to_buy/454:.1f} lbs"
+                    else:
+                        amt = f"{to_buy:.0f}g"
+                    lines.append(f"- [ ] {name}: {amt}")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"Error generating grocery list: {e}"
+
+
+# =============================================================================
+# BOUGHT - Add grocery list to inventory (done shopping!)
+# =============================================================================
+
+@router.get("/{username}/bought", response_class=PlainTextResponse)
+async def mark_groceries_bought(
+    request: Request,
+    username: str,
+    days: int = 7,
+    storage: str = "refrigerator",
+):
+    """
+    Add all items from grocery list to inventory.
+    Call this after shopping to update inventory with everything you bought.
+
+    Args:
+        days: Days the grocery list was for (default 7)
+        storage: Default storage location (refrigerator, freezer, pantry)
+
+    Example: /me/xander/bought?days=7&storage=refrigerator
+    """
+    check_local_network(request)
+    user_id = get_user_id(username)
+
+    from app.models.grocery import GroceryGenerationRequest
+    from app.services.grocery import generate_grocery_list
+
+    supabase = get_supabase()
+    today = date.today()
+    end = today + timedelta(days=days - 1)
+
+    try:
+        # Generate the grocery list
+        request_obj = GroceryGenerationRequest(
+            user_id=user_id,
+            start_date=today,
+            end_date=end,
+            include_meals=True,
+            include_reorders=False,
+            include_supplements=False,
+            subtract_inventory=True,
+            group_by_category=True,
+        )
+        grocery_list = await generate_grocery_list(request_obj)
+
+        if not grocery_list.items:
+            return "No items on grocery list to add"
+
+        added = []
+        errors = []
+
+        for item in grocery_list.items:
+            if item.to_buy_g <= 0:
+                continue
+
+            name = item.name
+            qty = item.to_buy_g
+            ingredient_id = item.ingredient_id
+
+            # Determine storage based on category
+            item_storage = storage
+            cat = str(item.category.value) if item.category else ""
+            if "frozen" in cat.lower():
+                item_storage = "freezer"
+            elif "pantry" in cat.lower() or "dry" in cat.lower():
+                item_storage = "pantry"
+            elif "produce" in cat.lower() or "meat" in cat.lower() or "dairy" in cat.lower():
+                item_storage = "refrigerator"
+
+            try:
+                # Find or create food item
+                if ingredient_id:
+                    food_item_id = ingredient_id
+                else:
+                    result = (
+                        supabase.table("foodos2_food_items")
+                        .select("id")
+                        .eq("user_id", user_id)
+                        .ilike("name", f"%{name}%")
+                        .limit(1)
+                        .execute()
+                    )
+                    if result.data:
+                        food_item_id = result.data[0]["id"]
+                    else:
+                        # Create new ingredient
+                        new_item = {
+                            "user_id": user_id,
+                            "name": name,
+                            "kind": "ingredient",
+                            "calories_per_100g": 0,
+                            "protein_g_per_100g": 0,
+                            "carbs_g_per_100g": 0,
+                            "fat_g_per_100g": 0,
+                        }
+                        result = supabase.table("foodos2_food_items").insert(new_item).execute()
+                        food_item_id = result.data[0]["id"]
+
+                # Check if already in inventory - if so, add to it
+                existing = (
+                    supabase.table("foodos2_inventory_items")
+                    .select("id, quantity_g")
+                    .eq("user_id", user_id)
+                    .eq("food_item_id", food_item_id)
+                    .limit(1)
+                    .execute()
+                )
+
+                if existing.data:
+                    # Update existing
+                    old_qty = float(existing.data[0]["quantity_g"])
+                    new_qty = old_qty + qty
+                    supabase.table("foodos2_inventory_items").update(
+                        {"quantity_g": new_qty}
+                    ).eq("id", existing.data[0]["id"]).execute()
+                else:
+                    # Add new
+                    inventory_item = {
+                        "user_id": user_id,
+                        "food_item_id": food_item_id,
+                        "quantity_g": qty,
+                        "date_added": today.isoformat(),
+                        "storage_type": item_storage,
+                    }
+                    supabase.table("foodos2_inventory_items").insert(inventory_item).execute()
+
+                added.append(f"{name}: {qty:.0f}g")
+
+            except Exception as e:
+                errors.append(f"{name}: {e}")
+
+        lines = [f"# Added to {username.title()}'s Inventory", ""]
+        lines.append(f"Added {len(added)} items from grocery list:")
+        lines.append("")
+        for item in added:
+            lines.append(f"- {item}")
+
+        if errors:
+            lines.append("")
+            lines.append(f"## Errors ({len(errors)})")
+            for err in errors:
+                lines.append(f"- {err}")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"Error processing grocery list: {e}"
+
+
+# =============================================================================
 # SEARCH - Search recipes
 # =============================================================================
 
