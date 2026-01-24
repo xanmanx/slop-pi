@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from enum import Enum
 from typing import Optional
 
@@ -156,3 +156,89 @@ class GroceryOptimizationResult(BaseModel):
     # Cost optimization
     total_estimated_cost: Optional[float] = None
     savings_vs_single_store: Optional[float] = None
+
+
+# ============================================================================
+# Persistent Grocery List Models
+# ============================================================================
+
+
+class GroceryListStatus(str, Enum):
+    """Status of a grocery list."""
+
+    ACTIVE = "active"
+    COMPLETED = "completed"
+    ARCHIVED = "archived"
+
+
+class GroceryListRecord(BaseModel):
+    """A saved grocery list record from the database."""
+
+    id: str
+    user_id: str
+    name: str = "Shopping List"
+    start_date: date
+    end_date: date
+    status: str = "active"
+    item_count: int = 0
+    checked_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+    completed_at: Optional[datetime] = None
+
+    # Generation config
+    include_meals: bool = True
+    include_reorders: bool = True
+    include_supplements: bool = True
+    subtract_inventory: bool = True
+    include_household: bool = False
+
+
+class GroceryListItemRecord(BaseModel):
+    """A single item in a saved grocery list."""
+
+    id: str
+    grocery_list_id: str
+    food_item_id: Optional[str] = None
+    name: str
+    needed_g: float = 0
+    in_stock_g: float = 0
+    to_buy_g: float = 0
+    from_meals: float = 0
+    from_reorders: float = 0
+    from_supplements: float = 0
+    category: str = "other"
+    sort_order: int = 0
+    checked: bool = False
+    checked_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+
+
+class SaveGroceryListRequest(BaseModel):
+    """Request to save a grocery list to the database."""
+
+    user_id: str
+    name: str = "Shopping List"
+    start_date: date
+    end_date: date
+    items: list[GroceryItem]
+
+    # Generation config
+    include_meals: bool = True
+    include_reorders: bool = True
+    include_supplements: bool = True
+    subtract_inventory: bool = True
+    include_household: bool = False
+
+
+class CheckItemRequest(BaseModel):
+    """Request to check/uncheck a grocery list item."""
+
+    checked: bool
+
+
+class GroceryListWithItems(BaseModel):
+    """A grocery list with its items."""
+
+    list: GroceryListRecord
+    items: list[GroceryListItemRecord]

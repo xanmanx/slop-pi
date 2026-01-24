@@ -9,8 +9,24 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.models.grocery import GroceryGenerationRequest, GroceryList
+from app.models.grocery import (
+    GroceryGenerationRequest,
+    GroceryList,
+    GroceryListRecord,
+    GroceryListWithItems,
+    SaveGroceryListRequest,
+    CheckItemRequest,
+)
 from app.services.grocery import generate_grocery_list
+from app.services.grocery_lists import (
+    save_grocery_list,
+    get_grocery_lists,
+    get_grocery_list,
+    update_item_checked,
+    delete_grocery_list,
+    complete_grocery_list,
+    archive_grocery_list,
+)
 
 router = APIRouter(prefix="/api/grocery", tags=["grocery"])
 
@@ -108,7 +124,7 @@ async def debug_grocery(
 
 
 @router.get("/list/{user_id}", response_model=GroceryList)
-async def get_grocery_list(
+async def get_grocery_list_generated(
     user_id: str,
     start_date: date = Query(..., description="Start date for grocery list"),
     end_date: date = Query(..., description="End date for grocery list"),
@@ -143,5 +159,113 @@ async def get_grocery_list(
 
         return await generate_grocery_list(request)
 
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Persistent Grocery List Endpoints
+# ============================================================================
+
+
+@router.post("/lists", response_model=dict)
+async def save_list(request: SaveGroceryListRequest) -> dict:
+    """Save a grocery list to the database.
+
+    Returns:
+        {id: str, created: bool}
+    """
+    try:
+        list_id = await save_grocery_list(request)
+        return {"id": list_id, "created": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/lists", response_model=list[GroceryListRecord])
+async def get_lists(
+    user_id: str = Query(..., description="User ID"),
+    status: Optional[str] = Query("active", description="Filter by status: active, completed, archived"),
+    limit: int = Query(20, description="Maximum lists to return"),
+) -> list[GroceryListRecord]:
+    """Get user's saved grocery lists."""
+    try:
+        return await get_grocery_lists(user_id, status, limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/lists/{list_id}", response_model=GroceryListWithItems)
+async def get_list(
+    list_id: str,
+    user_id: str = Query(..., description="User ID"),
+) -> GroceryListWithItems:
+    """Get a specific grocery list with all its items."""
+    try:
+        return await get_grocery_list(list_id, user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/lists/{list_id}/items/{item_id}", response_model=dict)
+async def update_item(
+    list_id: str,
+    item_id: str,
+    request: CheckItemRequest,
+    user_id: str = Query(..., description="User ID"),
+) -> dict:
+    """Update a grocery list item (check/uncheck)."""
+    try:
+        success = await update_item_checked(item_id, request.checked, user_id)
+        return {"success": success, "item_id": item_id, "checked": request.checked}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/lists/{list_id}", response_model=dict)
+async def delete_list(
+    list_id: str,
+    user_id: str = Query(..., description="User ID"),
+) -> dict:
+    """Delete a grocery list."""
+    try:
+        success = await delete_grocery_list(list_id, user_id)
+        return {"success": success, "deleted": list_id}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/lists/{list_id}/complete", response_model=dict)
+async def complete_list(
+    list_id: str,
+    user_id: str = Query(..., description="User ID"),
+) -> dict:
+    """Mark a grocery list as completed."""
+    try:
+        success = await complete_grocery_list(list_id, user_id)
+        return {"success": success, "status": "completed"}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/lists/{list_id}/archive", response_model=dict)
+async def archive_list(
+    list_id: str,
+    user_id: str = Query(..., description="User ID"),
+) -> dict:
+    """Archive a grocery list."""
+    try:
+        success = await archive_grocery_list(list_id, user_id)
+        return {"success": success, "status": "archived"}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

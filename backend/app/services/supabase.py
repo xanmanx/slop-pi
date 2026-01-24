@@ -44,6 +44,8 @@ TABLES = {
     "shopping_days": "foodos2_shopping_days",
     "reorders": "foodos2_reorders",
     "batch_prep": "foodos2_batch_prep_instructions",
+    "grocery_lists": "grocery_lists",
+    "grocery_list_items": "grocery_list_items",
 }
 
 
