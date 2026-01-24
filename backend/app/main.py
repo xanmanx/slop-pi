@@ -112,6 +112,7 @@ async def verify_api_key(request: Request, call_next):
     recipe_prefixes = [
         "/api/recipes/", "/api/nutrition/", "/api/grocery/", "/api/planning/",
         "/api/batch-prep/", "/api/barcode/", "/api/receipts/", "/api/prices/", "/api/expiration/",
+        "/api/ai/",  # AI endpoints (recipe generation, nutrition lookup)
         "/api/tokens/",
         "/me/",
         "/claude/",
