@@ -147,6 +147,22 @@ class PiClient:
         }
         return await self.get(f"/api/recipes/flatten/{recipe_id}", params=params)
 
+    async def compute_batch_prep(
+        self,
+        user_id: str,
+        plan_entry_ids: list[str],
+        include_batch_instructions: bool = True,
+    ) -> dict:
+        """Compute batch prep data for a set of plan entries."""
+        return await self.post(
+            "/api/batch-prep/compute",
+            json={
+                "user_id": user_id,
+                "plan_entry_ids": plan_entry_ids,
+                "include_batch_instructions": include_batch_instructions,
+            },
+        )
+
     # === USDA / Food Search ===
 
     async def search_usda(self, query: str, page_size: int = 25) -> dict:

@@ -21,6 +21,7 @@ from app.models.recipes import (
     FlattenedIngredient,
     RecipeNutrition,
     RecipeFlattened,
+    SubRecipeComponent,
 )
 from app.services.supabase import get_supabase_client, TABLES
 from app.services.enrichment import ensure_ingredients_enriched
@@ -77,6 +78,8 @@ class LegacyFlattenedIngredient:
     canonical_id: Optional[str] = None
     canonical_name: Optional[str] = None
     is_user_preference: bool = False
+    source_recipe_id: Optional[str] = None
+    source_recipe_name: Optional[str] = None
 
 
 @dataclass
@@ -392,10 +395,11 @@ async def flatten_recipe(
 
     # Flatten the DAG
     ingredients_dict: dict[str, LegacyFlattenedIngredient] = {}
+    sub_recipes_found: dict[str, dict] = {}  # id -> {name, kind, scale, ingredient_count}
     cycle_detected = False
     max_depth = 0
 
-    def walk(node_id: str, servings: float, path: set[str], depth: int):
+    def walk(node_id: str, servings: float, path: set[str], depth: int, source_recipe_id: str | None = None, source_recipe_name: str | None = None):
         nonlocal cycle_detected, max_depth
 
         if node_id in path:
@@ -478,11 +482,29 @@ async def flatten_recipe(
                         fat_g_per_100g=child.get("fat_g_per_100g") or 0,
                         micronutrients=child.get("micronutrients") or [],
                     )
+                    # Track source recipe for this ingredient
+                    if source_recipe_id:
+                        ingredients_dict[child_id].source_recipe_id = source_recipe_id
+                        ingredients_dict[child_id].source_recipe_name = source_recipe_name
             else:
-                # Sub-meal: recurse
+                # Sub-meal: track it and recurse
+                child_name = child.get("name", "Unknown")
                 child_servings = servings * amount
+
+                # Record this sub-recipe (only at depth 1 for direct children of root)
+                if depth == 0 and child_id not in sub_recipes_found:
+                    child_recipe_node = ctx.node_map.get(child_id)
+                    sub_recipes_found[child_id] = {
+                        "name": child_name,
+                        "kind": child_kind,
+                        "scale": child_servings,
+                        "prep_time": child_recipe_node.get("prep_time_minutes") if child_recipe_node else None,
+                        "cook_time": child_recipe_node.get("cook_time_minutes") if child_recipe_node else None,
+                    }
+
                 if child_servings > 0:
-                    walk(child_id, child_servings, next_path, depth + 1)
+                    walk(child_id, child_servings, next_path, depth + 1,
+                         source_recipe_id=child_id, source_recipe_name=child_name)
 
     walk(recipe_id, scale_factor, set(), 0)
 
@@ -507,8 +529,37 @@ async def flatten_recipe(
             canonical_id=legacy.canonical_id,
             canonical_name=legacy.canonical_name,
             is_user_preference=legacy.is_user_preference,
+            source_recipe_id=legacy.source_recipe_id,
+            source_recipe_name=legacy.source_recipe_name,
         )
         ingredients.append(ing)
+
+    # Build sub-recipe components list
+    sub_recipes: list[SubRecipeComponent] = []
+    for sub_id, sub_info in sub_recipes_found.items():
+        # Count ingredients from this sub-recipe
+        ing_count = sum(1 for ing in ingredients if ing.source_recipe_id == sub_id)
+        # Calculate nutrition for this sub-recipe's ingredients
+        sub_cals = sum(ing.calories for ing in ingredients if ing.source_recipe_id == sub_id)
+        sub_protein = sum(ing.protein_g for ing in ingredients if ing.source_recipe_id == sub_id)
+        sub_carbs = sum(ing.carbs_g for ing in ingredients if ing.source_recipe_id == sub_id)
+        sub_fat = sum(ing.fat_g for ing in ingredients if ing.source_recipe_id == sub_id)
+        sub_grams = sum(ing.amount_g for ing in ingredients if ing.source_recipe_id == sub_id)
+
+        sub_recipes.append(SubRecipeComponent(
+            recipe_id=sub_id,
+            recipe_name=sub_info["name"],
+            recipe_kind=sub_info["kind"],
+            scale_factor=sub_info["scale"],
+            calories=sub_cals,
+            protein_g=sub_protein,
+            carbs_g=sub_carbs,
+            fat_g=sub_fat,
+            total_grams=sub_grams,
+            ingredient_count=ing_count,
+            prep_time_minutes=sub_info["prep_time"],
+            cook_time_minutes=sub_info["cook_time"],
+        ))
 
     # Compute nutrition
     nutrition = _compute_nutrition(ingredients, include_rda)
@@ -523,6 +574,8 @@ async def flatten_recipe(
         scale_factor=scale_factor,
         ingredients=ingredients,
         ingredient_count=len(ingredients),
+        sub_recipes=sub_recipes,
+        has_sub_recipes=len(sub_recipes) > 0,
         nutrition=nutrition,
         prep_time_minutes=recipe_node.get("prep_time_minutes") if recipe_node else None,
         cook_time_minutes=recipe_node.get("cook_time_minutes") if recipe_node else None,

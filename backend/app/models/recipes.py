@@ -9,6 +9,29 @@ from pydantic import BaseModel, Field
 from .nutrition import Macros, MicronutrientWithRDA
 
 
+class SubRecipeComponent(BaseModel):
+    """A sub-recipe that is part of a parent recipe (DAG component)."""
+
+    recipe_id: str
+    recipe_name: str
+    recipe_kind: str  # "meal", "snack"
+    scale_factor: float = 1.0  # How much of this sub-recipe is used
+
+    # Nutrition for this component (at the given scale)
+    calories: float = 0
+    protein_g: float = 0
+    carbs_g: float = 0
+    fat_g: float = 0
+    total_grams: float = 0
+
+    # Number of ingredients this sub-recipe contributes
+    ingredient_count: int = 0
+
+    # Prep info
+    prep_time_minutes: Optional[int] = None
+    cook_time_minutes: Optional[int] = None
+
+
 class FlattenedIngredient(BaseModel):
     """A single ingredient from a flattened recipe."""
 
@@ -16,6 +39,9 @@ class FlattenedIngredient(BaseModel):
     ingredient_name: str
     ingredient_kind: str  # "ingredient", "product"
     amount_g: float
+    # Source sub-recipe (if ingredient came from a sub-recipe)
+    source_recipe_id: Optional[str] = None
+    source_recipe_name: Optional[str] = None
 
     # Nutrition per 100g
     calories_per_100g: float = 0
@@ -89,6 +115,11 @@ class RecipeFlattened(BaseModel):
     # Flattened ingredients
     ingredients: list[FlattenedIngredient] = Field(default_factory=list)
     ingredient_count: int = 0
+
+    # Sub-recipes (component recipes in the DAG)
+    # Only populated for parent recipes that contain other recipes
+    sub_recipes: list[SubRecipeComponent] = Field(default_factory=list)
+    has_sub_recipes: bool = False
 
     # Computed nutrition
     nutrition: RecipeNutrition

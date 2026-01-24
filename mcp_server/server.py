@@ -1151,13 +1151,52 @@ async def get_recipe_details(
             lines.append(f"**Time**: {', '.join(times)}")
             lines.append("")
 
+        # Show sub-recipes (DAG components) if present
+        sub_recipes = data.get("sub_recipes", [])
+        if sub_recipes:
+            lines.append("## Component Recipes")
+            lines.append("*This recipe includes the following sub-recipes:*")
+            lines.append("")
+            for sr in sub_recipes:
+                name = sr.get("recipe_name", "Unknown")
+                cals = sr.get("calories", 0)
+                protein = sr.get("protein_g", 0)
+                grams = sr.get("total_grams", 0)
+                ing_count = sr.get("ingredient_count", 0)
+                lines.append(f"- **{name}** ({grams:.0f}g)")
+                lines.append(f"  - {cals:.0f} cal, {protein:.0f}g protein, {ing_count} ingredients")
+            lines.append("")
+
         ingredients = data.get("ingredients", [])
         if ingredients:
             lines.append("## Ingredients")
-            for ing in ingredients:
-                name = ing.get("ingredient_name", "Unknown")
-                amount = ing.get("amount_g", 0)
-                lines.append(f"- {name}: {amount:.0f}g")
+            # Group by source recipe if sub-recipes exist
+            if sub_recipes:
+                # Direct ingredients (no source)
+                direct = [ing for ing in ingredients if not ing.get("source_recipe_id")]
+                if direct:
+                    lines.append("### Direct Ingredients")
+                    for ing in direct:
+                        name = ing.get("ingredient_name", "Unknown")
+                        amount = ing.get("amount_g", 0)
+                        lines.append(f"- {name}: {amount:.0f}g")
+
+                # Ingredients by sub-recipe
+                for sr in sub_recipes:
+                    sr_id = sr.get("recipe_id")
+                    sr_name = sr.get("recipe_name")
+                    sr_ings = [ing for ing in ingredients if ing.get("source_recipe_id") == sr_id]
+                    if sr_ings:
+                        lines.append(f"### From {sr_name}")
+                        for ing in sr_ings:
+                            name = ing.get("ingredient_name", "Unknown")
+                            amount = ing.get("amount_g", 0)
+                            lines.append(f"- {name}: {amount:.0f}g")
+            else:
+                for ing in ingredients:
+                    name = ing.get("ingredient_name", "Unknown")
+                    amount = ing.get("amount_g", 0)
+                    lines.append(f"- {name}: {amount:.0f}g")
             lines.append("")
 
         steps = data.get("prep_steps", [])
@@ -1193,6 +1232,288 @@ async def get_recipe_details(
 
     except Exception as e:
         return f"Error fetching recipe: {e}"
+
+
+@mcp.tool()
+async def get_recipe_instructions(
+    recipe_id: str | None = None,
+    recipe_name: str | None = None,
+    scale: float = 1.0,
+    include_sub_recipes: bool = True,
+    user_id: str | None = None,
+) -> str:
+    """Get cooking instructions for a recipe, including sub-recipe steps.
+
+    For DAG recipes (recipes containing other recipes), this returns instructions
+    for all component recipes in the correct order.
+
+    Args:
+        recipe_id: UUID of the recipe
+        recipe_name: Name of the recipe (will search for it)
+        scale: Scale factor for the recipe (default 1.0)
+        include_sub_recipes: Include instructions for sub-recipes (default True)
+        user_id: User ID (uses default if not provided)
+
+    Returns:
+        Formatted cooking instructions with timing and sub-recipe steps
+    """
+    uid = user_id or config.default_user_id
+    if not uid:
+        return "Error: No user_id provided and no default configured"
+
+    if not recipe_id and not recipe_name:
+        return "Error: Provide either recipe_id or recipe_name"
+
+    try:
+        # Find recipe by name if needed
+        if recipe_name and not recipe_id:
+            from supabase import create_client
+
+            supabase = create_client(config.supabase_url, config.supabase_key)
+            result = (
+                supabase.table("foodos2_food_items")
+                .select("id, name")
+                .eq("user_id", uid)
+                .in_("kind", ["meal", "snack"])
+                .ilike("name", f"%{recipe_name}%")
+                .limit(1)
+                .execute()
+            )
+
+            if not result.data:
+                return f"Could not find recipe matching '{recipe_name}'"
+            recipe_id = result.data[0]["id"]
+
+        data = await pi_client.get_recipe_details(recipe_id, uid, scale, include_rda=False)
+
+        lines = [f"# {data.get('recipe_name', 'Recipe')} - Instructions", ""]
+
+        # Timing overview
+        prep = data.get("prep_time_minutes", 0) or 0
+        cook = data.get("cook_time_minutes", 0) or 0
+        sub_recipes = data.get("sub_recipes", [])
+
+        # Calculate total time including sub-recipes
+        total_prep = prep
+        total_cook = cook
+        for sr in sub_recipes:
+            total_prep += sr.get("prep_time_minutes", 0) or 0
+            total_cook += sr.get("cook_time_minutes", 0) or 0
+
+        if total_prep or total_cook:
+            lines.append("## Timing Overview")
+            if sub_recipes:
+                lines.append(f"- **Total Prep**: {total_prep} min")
+                lines.append(f"- **Total Cook**: {total_cook} min")
+                lines.append(f"- **Components**: {len(sub_recipes)} sub-recipes")
+            else:
+                lines.append(f"- **Prep**: {prep} min")
+                lines.append(f"- **Cook**: {cook} min")
+            lines.append("")
+
+        # Sub-recipe instructions (if present and requested)
+        if include_sub_recipes and sub_recipes:
+            lines.append("## Component Recipe Instructions")
+            lines.append("*Prepare these components first or in parallel:*")
+            lines.append("")
+
+            for sr in sub_recipes:
+                sr_name = sr.get("recipe_name", "Unknown")
+                sr_id = sr.get("recipe_id")
+                sr_prep = sr.get("prep_time_minutes", 0) or 0
+                sr_cook = sr.get("cook_time_minutes", 0) or 0
+
+                lines.append(f"### {sr_name}")
+                if sr_prep or sr_cook:
+                    times = []
+                    if sr_prep:
+                        times.append(f"Prep: {sr_prep}min")
+                    if sr_cook:
+                        times.append(f"Cook: {sr_cook}min")
+                    lines.append(f"*{', '.join(times)}*")
+                lines.append("")
+
+                # Get sub-recipe details for its steps
+                try:
+                    sr_data = await pi_client.get_recipe_details(sr_id, uid, 1.0, include_rda=False)
+                    sr_steps = sr_data.get("prep_steps", [])
+                    if sr_steps:
+                        for i, step in enumerate(sr_steps, 1):
+                            lines.append(f"{i}. {step}")
+                    else:
+                        lines.append("*(No detailed steps available)*")
+                except Exception:
+                    lines.append("*(Could not load sub-recipe steps)*")
+                lines.append("")
+
+        # Main recipe steps
+        steps = data.get("prep_steps", [])
+        if steps:
+            if sub_recipes:
+                lines.append("## Assembly Instructions")
+                lines.append("*After preparing the components:*")
+            else:
+                lines.append("## Instructions")
+            lines.append("")
+            for i, step in enumerate(steps, 1):
+                lines.append(f"{i}. {step}")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"Error fetching recipe instructions: {e}"
+
+
+@mcp.tool()
+async def get_batch_prep_instructions(
+    start_date: str | None = None,
+    end_date: str | None = None,
+    days: int = 7,
+    user_id: str | None = None,
+) -> str:
+    """Get batch prep instructions for meals planned in a date range.
+
+    Aggregates multiple meals and provides efficient batch cooking instructions
+    with grouped ingredients and meal-by-meal prep steps.
+
+    Args:
+        start_date: Start date in YYYY-MM-DD format (defaults to today)
+        end_date: End date in YYYY-MM-DD format (optional, use days instead)
+        days: Number of days to include (default 7, ignored if end_date provided)
+        user_id: User ID (uses default if not provided)
+
+    Returns:
+        Formatted batch prep guide with aggregated ingredients and instructions
+    """
+    uid = user_id or config.default_user_id
+    if not uid:
+        return "Error: No user_id provided and no default configured"
+
+    from datetime import date, timedelta
+    from supabase import create_client
+
+    try:
+        supabase = create_client(config.supabase_url, config.supabase_key)
+
+        # Calculate date range
+        if start_date:
+            start = date.fromisoformat(start_date)
+        else:
+            start = date.today()
+
+        if end_date:
+            end = date.fromisoformat(end_date)
+        else:
+            end = start + timedelta(days=days - 1)
+
+        # Get plan entries for the date range
+        result = (
+            supabase.table("foodos2_plan_entries")
+            .select("id, planned_date, slot, food_item_id")
+            .eq("user_id", uid)
+            .gte("planned_date", start.isoformat())
+            .lte("planned_date", end.isoformat())
+            .execute()
+        )
+
+        entries = result.data or []
+        if not entries:
+            return f"No meals planned from {start} to {end}"
+
+        entry_ids = [e["id"] for e in entries]
+
+        # Compute batch prep via Pi backend
+        batch_data = await pi_client.compute_batch_prep(uid, entry_ids, include_batch_instructions=True)
+
+        lines = [f"# Batch Prep Guide", ""]
+        lines.append(f"**Date Range**: {start.isoformat()} to {end.isoformat()}")
+        lines.append(f"**Total Meals**: {batch_data.get('total_meal_count', 0)}")
+        lines.append(f"**Unique Recipes**: {batch_data.get('unique_meal_count', 0)}")
+        lines.append("")
+
+        # Timing
+        total_prep = batch_data.get("total_prep_time_minutes", 0)
+        total_cook = batch_data.get("total_cook_time_minutes", 0)
+        if total_prep or total_cook:
+            lines.append(f"**Estimated Time**: {total_prep} min prep + {total_cook} min cook")
+            lines.append("")
+
+        # Aggregated shopping list
+        agg_ingredients = batch_data.get("aggregated_ingredients", [])
+        if agg_ingredients:
+            lines.append("## Shopping List (Aggregated)")
+            lines.append("*Total ingredients needed for all meals:*")
+            lines.append("")
+            for ing in agg_ingredients[:20]:  # Limit to top 20
+                name = ing.get("ingredient_name", "Unknown")
+                total_g = ing.get("total_amount_g", 0)
+                sources = ing.get("source_meal_names", [])
+                source_str = ", ".join(sources[:2])
+                if len(sources) > 2:
+                    source_str += f" +{len(sources) - 2}"
+                lines.append(f"- **{name}**: {total_g:.0f}g *(from: {source_str})*")
+            if len(agg_ingredients) > 20:
+                lines.append(f"- *... and {len(agg_ingredients) - 20} more ingredients*")
+            lines.append("")
+
+        # Per-meal instructions
+        grouped_meals = batch_data.get("grouped_meals", [])
+        if grouped_meals:
+            lines.append("## Meal Prep Instructions")
+            lines.append("")
+
+            for meal in grouped_meals:
+                name = meal.get("food_item_name", "Unknown")
+                count = meal.get("count", 1)
+                prep_time = meal.get("prep_time_minutes", 0) or 0
+                cook_time = meal.get("cook_time_minutes", 0) or 0
+
+                lines.append(f"### {name} (x{count})")
+                if prep_time or cook_time:
+                    lines.append(f"*Prep: {prep_time}min, Cook: {cook_time}min*")
+                lines.append("")
+
+                # Batch ingredients
+                batch_ings = meal.get("batch_ingredients", [])
+                if batch_ings:
+                    lines.append("**Ingredients (total for batch):**")
+                    for ing in batch_ings[:8]:
+                        ing_name = ing.get("ingredient_name", "Unknown")
+                        ing_total = ing.get("total_amount_g", 0)
+                        lines.append(f"- {ing_name}: {ing_total:.0f}g")
+                    if len(batch_ings) > 8:
+                        lines.append(f"- *... +{len(batch_ings) - 8} more*")
+                    lines.append("")
+
+                # Prep steps
+                steps = meal.get("single_serving_steps", [])
+                batch_instructions = meal.get("batch_prep_instructions")
+
+                if batch_instructions:
+                    lines.append("**Batch Prep Instructions:**")
+                    lines.append(batch_instructions)
+                elif steps:
+                    lines.append("**Steps:**")
+                    for i, step in enumerate(steps, 1):
+                        lines.append(f"{i}. {step}")
+                else:
+                    lines.append("*(No detailed instructions available)*")
+                lines.append("")
+
+        # Nutrition summary
+        total_cal = batch_data.get("total_calories", 0)
+        total_protein = batch_data.get("total_protein_g", 0)
+        if total_cal:
+            lines.append("## Nutrition (Total Batch)")
+            lines.append(f"- **Calories**: {total_cal:.0f}")
+            lines.append(f"- **Protein**: {total_protein:.0f}g")
+            lines.append(f"- **Carbs**: {batch_data.get('total_carbs_g', 0):.0f}g")
+            lines.append(f"- **Fat**: {batch_data.get('total_fat_g', 0):.0f}g")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"Error generating batch prep instructions: {e}"
 
 
 @mcp.tool()
